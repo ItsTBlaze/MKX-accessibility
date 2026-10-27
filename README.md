@@ -10,7 +10,7 @@ Status: early testing (version 0.3). Feedback is very welcome; see
 
 ## Install
 
-1. Download the latest zip from the [Releases page](../../releases).
+1. Download [MKXAccess-0.3.zip](download/MKXAccess-0.3.zip?raw=true), the latest test version.
 2. In Steam, right-click Mortal Kombat X, choose **Manage**, then **Browse local files**.
 3. Open **Binaries**, then **Retail** (the folder with `MK10.exe`).
 4. Copy these files from the zip into that folder:
