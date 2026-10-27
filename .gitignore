@@ -1,0 +1,6 @@
+out/
+*.log
+*.pdb
+*.exe
+test/harness
+test/*.txt
