@@ -34,7 +34,7 @@ int main(int argc,char**argv){
   FILE* f=fopen(argv[1],"r"); char line[8192]; static Event ev;
   while(fgets(line,sizeof line,f)){
     unsigned t; char type[16]; if(sscanf(line,"%u %15s",&t,type)!=2) continue;
-    int et=0; if(!strcmp(type,"TEXT"))et=EV_TEXT; else if(!strcmp(type,"HTML"))et=EV_HTML; else if(!strcmp(type,"FOCUS"))et=EV_FOCUS; else if(!strcmp(type,"GRID"))et=EV_GRID; else if(!strcmp(type,"ANIMFOCUS"))et=EV_ANIM; else continue;
+    int et=0; if(!strcmp(type,"TEXT"))et=EV_TEXT; else if(!strcmp(type,"HTML"))et=EV_HTML; else if(!strcmp(type,"FOCUS"))et=EV_FOCUS; else if(!strcmp(type,"GRID"))et=EV_GRID; else if(!strcmp(type,"ANIMFOCUS"))et=EV_ANIM; else if(!strcmp(type,"ANIMFOCUS"))et=EV_ANIM; else continue;
     while(g_clock+25<=t){g_clock+=25;tick();}
     g_clock=t;
     memset(&ev,0,sizeof ev); ev.type=et; ev.t=t;

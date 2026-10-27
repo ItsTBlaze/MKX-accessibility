@@ -9,7 +9,7 @@
    Everything is also written to MKXAccess.log next to the game exe. */
 #include "win.h"
 
-#define VERSION L"0.3"
+#define VERSION L"0.4"
 #define IMAGE_BASE 0x140000000ULL
 
 /* ------------------------------------------------------------------ */
@@ -52,10 +52,14 @@ static volatile int g_ready;
 static wchar g_dir[MAX_PATH];
 static u64 g_base;
 
+static u64 g_imageEnd;   /* base + SizeOfImage: the game's own code and constant data */
+static volatile LONG g_statCalls, g_statQueued, g_statDeduped;
+
 static int readable(const void* p, SIZE_T n)
 {
     MEMORY_BASIC_INFORMATION mbi;
     if ((u64)p < 0x10000 || (u64)p > 0x7FFFFFFFFFFFULL) return 0;
+    if ((u64)p >= g_base && (u64)p + n <= g_imageEnd) return 1;   /* inside MK10.exe: always mapped */
     if (!VirtualQuery(p, &mbi, sizeof(mbi))) return 0;
     if (mbi.State != MEM_COMMIT) return 0;
     if (mbi.Protect & 0x101) return 0; /* NOACCESS or GUARD */
@@ -83,6 +87,7 @@ static Event* q_begin(void)
     if (next == g_qtail) { LeaveCriticalSection(&g_qlock); return 0; } /* full: drop */
     Event* e = &g_q[g_qhead];
     e->t = GetTickCount(); e->path[0] = 0; e->text[0] = 0; e->id = 0; e->x = e->y = 0;
+    g_statQueued++;
     return e;
 }
 static void q_end(void)
@@ -94,14 +99,30 @@ static void q_end(void)
 
 /* ------------------------------------------------------------------ */
 /* hooks (run on the game thread: keep them fast)                      */
+/* last text hash per element, so re-setting the same text costs almost nothing */
+typedef struct { u64 self; DWORD hash; } LastSet;
+static LastSet g_lastSet[2048];
+static int same_as_last(void* self, const wchar* s, int salt)
+{
+    DWORD h = 2166136261u ^ (DWORD)salt;
+    if (s) for (int i = 0; s[i] && i < TEXTMAX; i++) { h ^= s[i]; h *= 16777619u; }
+    LastSet* c = &g_lastSet[((u64)self >> 4) & 2047];
+    g_statCalls++;
+    if (c->self == (u64)self && c->hash == h) { g_statDeduped++; return 1; }
+    c->self = (u64)self; c->hash = h;
+    return 0;
+}
+
 static void hk_setText(void* self, const wchar* s)
 {
+    if (same_as_last(self, s, 1)) { o_setText(self, s); return; }
     Event* e = q_begin();
     if (e) { e->type = EV_TEXT; e->id = (u64)self; path_of(self, e->path); if (s) wcpy(e->text, s, TEXTMAX); q_end(); }
     o_setText(self, s);
 }
 static DWORD hk_setTextHTML(void* self, const wchar* s)
 {
+    if (same_as_last(self, s, 2)) return o_setTextHTML(self, s);
     Event* e = q_begin();
     if (e) { e->type = EV_HTML; e->id = (u64)self; path_of(self, e->path); if (s) wcpy(e->text, s, TEXTMAX); q_end(); }
     return o_setTextHTML(self, s);
@@ -439,10 +460,11 @@ static int is_titleish(const wchar* p)
     return contains_ci(p, "title") || contains_ci(p, "header") || contains_ci(p, "CharText") ||
            contains_ci(p, "message") || contains_ci(p, "msgBox") || contains_ci(p, "popup") || contains_ci(p, "dialog");
 }
+static int ends_with_colon(const wchar* t) { int n = wlen(t); return n > 0 && t[n - 1] == ':'; }
 static int ignored_path(const wchar* p)
 {
     return contains_ci(p, "ButtonLogs") || contains_ci(p, "wbPlayWindow") || contains_ci(p, "BenchmarkStats") ||
-           contains_ci(p, "versionNumber") || starts_ci(p, "_root.legal.");
+           contains_ci(p, "versionNumber") || starts_ci(p, "_root.legal.") || contains_ci(p, "panel.news");
 }
 
 /* ------------------------------------------------------------------ */
@@ -477,7 +499,9 @@ static Entry* find_entry(u64 key)
     e->gen = ++g_gen;
     return e;
 }
-static int is_busy(Entry* e, DWORD now) { return now - e->winStart <= 2000 && e->winCount > 3; }
+/* a ticker/timer: keeps changing for seconds. A status line that changes a few
+   times quickly (LOOKING... CREATING... WAITING FOR OPPONENT) is not busy. */
+static int is_busy(Entry* e, DWORD now) { return now - e->winStart <= 4000 && e->winCount > 8; }
 
 /* focus state */
 static wchar g_focusPath[PATHMAX];
@@ -499,7 +523,7 @@ static void handle_text(Event* ev)
     logf3(tag, e->path[0] ? e->path : (const wchar*)L"?", clean);
     wcpy(e->text, clean, TEXTMAX);
     DWORD now = ev->t;
-    if (now - e->winStart > 2000) { e->winStart = now; e->winCount = 0; }
+    if (now - e->winStart > 4000) { e->winStart = now; e->winCount = 0; }
     e->winCount++;
     e->changed = now;
     if (!clean[0] || ignored_path(e->path)) return;
@@ -670,8 +694,10 @@ static void auto_read(DWORD now)
         g_recentSpoken[s] = 1;
         Entry* e = &g_ent[g_recent[s]];
         if (e->gen != g_recentGen[s] || is_busy(e, now) || !e->text[0] || no_letters(e->text)) continue;
+        if (ends_with_colon(e->text)) continue;   /* a label waiting for its value, e.g. "WINS:" */
         if (now - g_lastTime < 3000 && wlen(e->text) >= 8 && contains_w(g_last, e->text)) continue;   /* just said it */
-        if (nc < 64) cand[nc++] = e;
+        int dup = 0; for (int i = 0; i < nc; i++) if (cand[i] == e) dup = 1;   /* only its latest value */
+        if (!dup && nc < 64) cand[nc++] = e;
     }
     /* many texts at once = a whole screen loaded: read only its title / message */
     for (int i = 0; i < nc; i++) {
@@ -776,7 +802,7 @@ static DWORD WINAPI worker(void* arg)
     speak_force(okCount == NHOOKS ? (const wchar*)L"MKX Access loaded" :
                 okCount ? (const wchar*)L"MKX Access loaded with some hooks missing" : (const wchar*)L"MKX Access could not hook this game version");
 
-    DWORD lastFlush = GetTickCount();
+    DWORD lastFlush = GetTickCount(), lastStats = GetTickCount();
     for (;;) {
         WaitForSingleObject(g_qevent, 25);
         for (;;) {
@@ -794,6 +820,14 @@ static DWORD WINAPI worker(void* arg)
         auto_read(now);
         poll_keys();
         if (now - lastFlush > 2000) { if (g_log != INVALID_HANDLE_VALUE) FlushFileBuffers(g_log); lastFlush = now; }
+        if (now - lastStats > 60000) {
+            wchar a[24], b[24], c[24], line[128];
+            utoa_w((u64)g_statCalls, a, 10, 1); utoa_w((u64)g_statDeduped, b, 10, 1); utoa_w((u64)g_statQueued, c, 10, 1);
+            wcpy(line, (const wchar*)L"text calls=", 128); wcat(line, a, 128); wcat(line, (const wchar*)L" skipped-unchanged=", 128);
+            wcat(line, b, 128); wcat(line, (const wchar*)L" events=", 128); wcat(line, c, 128);
+            logf3((const wchar*)L"STATS", 0, line);
+            lastStats = now;
+        }
     }
     return 0;
 }
@@ -814,6 +848,10 @@ BOOL WINAPI DllMain(HMODULE h, DWORD reason, void* r)
     g_dir[n] = 0;
     g_t0 = GetTickCount();
     g_base = (u64)GetModuleHandleW(0);
+    {   /* SizeOfImage from the PE header */
+        DWORD lfanew = *(DWORD*)(g_base + 0x3C);
+        g_imageEnd = g_base + *(DWORD*)(g_base + lfanew + 0x50);
+    }
     g_q = (Event*)VirtualAlloc(0, sizeof(Event) * QSIZE, MEM_COMMIT | MEM_RESERVE, 0x04);
     g_ent = (Entry*)VirtualAlloc(0, sizeof(Entry) * NENT, MEM_COMMIT | MEM_RESERVE, 0x04);
     if (!g_q || !g_ent) return TRUE;
