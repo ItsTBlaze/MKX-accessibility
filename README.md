@@ -10,7 +10,8 @@ Status: early testing (version 0.4.2). Feedback is very welcome; see
 
 ## Install
 
-1. Download [MKXAccess-0.4.2.zip](download/MKXAccess-0.4.2.zip?raw=true), the latest test version.
+1. Download **[MKXAccess.zip](https://github.com/ItsTBlaze/MKX-accessibility/raw/main/download/MKXAccess.zip)**.
+   This link always gets the newest version (currently 0.4.2).
 2. Unzip it, and make sure Mortal Kombat X is closed.
 3. Open the unzipped MKXAccess folder and run **Install**. It finds the game on its
    own and tells you when it's done. Windows may ask whether to run a file from the
