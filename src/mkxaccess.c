@@ -9,7 +9,7 @@
    Everything is also written to MKXAccess.log next to the game exe. */
 #include "win.h"
 
-#define VERSION L"0.4.3"
+#define VERSION L"0.4.4"
 #define IMAGE_BASE 0x140000000ULL
 
 /* ------------------------------------------------------------------ */
@@ -484,11 +484,19 @@ static int is_titleish(const wchar* p)
     return contains_ci(p, "title") || contains_ci(p, "header") || contains_ci(p, "CharText") ||
            contains_ci(p, "message") || contains_ci(p, "msgBox") || contains_ci(p, "popup") || contains_ci(p, "dialog");
 }
+/* "[X] RETURN TO KRYPT ENTRANCE [Y] QUIT TO MAIN MENU" and similar button hints */
+static int is_prompt(const wchar* p)
+{
+    return contains_ci(p, "navText") || contains_ci(p, "helpText") || contains_ci(p, "buttonPrompt") ||
+           contains_ci(p, "ButtonText") || contains_ci(p, "hintText") || contains_ci(p, ".help.");
+}
+static int is_price(const wchar* p) { return contains_ci(p, "cost") || contains_ci(p, "price"); }
 static int ends_with_colon(const wchar* t) { int n = wlen(t); return n > 0 && t[n - 1] == ':'; }
 static int ignored_path(const wchar* p)
 {
     return contains_ci(p, "ButtonLogs") || contains_ci(p, "wbPlayWindow") || contains_ci(p, "BenchmarkStats") ||
-           contains_ci(p, "versionNumber") || starts_ci(p, "_root.legal.") || contains_ci(p, "panel.news");
+           contains_ci(p, "versionNumber") || starts_ci(p, "_root.legal.") || contains_ci(p, "panel.news") ||
+           contains_ci(p, "MinimapContainer.timer") || contains_ci(p, "MapSelection");
 }
 
 /* ------------------------------------------------------------------ */
@@ -525,6 +533,20 @@ static Entry* find_entry(u64 key)
 }
 /* a ticker/timer: keeps changing for seconds. A status line that changes a few
    times quickly (LOOKING... CREATING... WAITING FOR OPPONENT) is not busy. */
+/* find an entry without creating one */
+static Entry* lookup_entry(u64 key)
+{
+    int idx = (int)((key * 0x9E3779B97F4A7C15ULL) >> 52) & (NENT - 1);
+    for (int k = 0; k < PROBE; k++) {
+        Entry* e = &g_ent[(idx + k) & (NENT - 1)];
+        if (e->used && e->key == key) return e;
+        if (!e->used) return 0;
+    }
+    return 0;
+}
+typedef struct { u64 focus; u64 key[2]; } PromptMemo;
+static PromptMemo g_promptMemo[64];
+
 static int is_busy(Entry* e, DWORD now) { return now - e->winStart <= 4000 && e->winCount > 8; }
 
 /* focus state */
@@ -756,14 +778,47 @@ static void announce_focus(void)
         if (burst > 8) {   /* a whole screen just loaded: besides the item, read only titles */
             Entry* t = &g_ent[g_recent[s]];
             g_recentSpoken[s] = 1;
-            if (!is_titleish(t->path) && !contains_ci(t->path, "description") && !contains_ci(t->path, "HelpText")) continue;
+            if (!is_titleish(t->path) && !contains_ci(t->path, "description") && !is_prompt(t->path)) continue;
         }
         g_recentSpoken[s] = 1;
         Entry* e = &g_ent[g_recent[s]];
         if (e->gen != g_recentGen[s] || !e->text[0]) continue;
-        if (list[0] && is_child_path(e->path, list) && !(anc[0] && is_child_path(e->path, anc)) && !is_titleish(e->path)) continue;
+        if (list[0] && is_child_path(e->path, list) && !(anc[0] && is_child_path(e->path, anc)) && !is_titleish(e->path) && !is_prompt(e->path)) continue;
         if (no_letters(e->text) && !(anc[0] && is_child_path(e->path, anc))) continue;
         add_part(out, 2048, e->text, &count);
+    }
+    /* 3. button prompts the screen showed again (same text as last time, so not "changed") */
+    int nprompt = 0; u64 promptKeys[2] = {0, 0};
+    for (int i = 0; i < NENT && count < 7; i++) {
+        Entry* e = &g_ent[i];
+        if (!e->used || !e->text[0] || !is_prompt(e->path) || ignored_path(e->path)) continue;
+        if ((int)(e->touched - g_focusTime) < -30 || (int)(e->touched - g_focusTime) > 150) continue;
+        add_part(out, 2048, e->text, &count);
+    }
+    /* 4. remember which prompts came with this item, so returning to it (pausing the
+          Krypt again) reads them too, even if the game doesn't set them again */
+    for (int i = 0; i < NENT && nprompt < 2; i++) {
+        Entry* e = &g_ent[i];
+        if (!e->used || !e->text[0] || !is_prompt(e->path)) continue;
+        /* must be one whole part of what we are about to say, and a real prompt, not a lone "[Y]" */
+        int w = wlen(e->text), ol = wlen(out), found = 0;
+        if (w < 6) continue;
+        for (int k = 0; k + w <= ol && !found; k++) {
+            if (k > 0 && !(k >= 2 && out[k - 2] == ',' && out[k - 1] == ' ')) continue;
+            int m = 1; for (int j = 0; j < w && m; j++) if (out[k + j] != e->text[j]) m = 0;
+            if (m && (out[k + w] == 0 || out[k + w] == ',')) found = 1;
+        }
+        if (found) promptKeys[nprompt++] = e->key;
+    }
+    u64 fk = hash_path(g_focusPath);
+    PromptMemo* pm = &g_promptMemo[(fk >> 3) & 63];
+    if (nprompt) { pm->focus = fk; pm->key[0] = promptKeys[0]; pm->key[1] = promptKeys[1]; }
+    else if (pm->focus == fk) {
+        for (int k = 0; k < 2; k++) {
+            if (!pm->key[k]) continue;
+            Entry* e = lookup_entry(pm->key[k]);
+            if (e && e->text[0]) add_part(out, 2048, e->text, &count);
+        }
     }
     if (out[0]) say(out, 1);
 }
@@ -776,14 +831,18 @@ static void auto_read(DWORD now)
     int start = g_nrecent > NRECENT ? g_nrecent - NRECENT : 0;
     for (int k = start; k < g_nrecent; k++) {   /* wait until text settles */
         int s = k % NRECENT;
-        if (!g_recentSpoken[s] && now - g_recentT[s] < 250) return;
+        if (g_recentSpoken[s]) continue;
+        Entry* e = &g_ent[g_recent[s]];
+        /* a ticking clock or counter must not hold everything else back */
+        if (e->gen != g_recentGen[s] || is_busy(e, now) || (no_letters(e->text) && !is_price(e->path))) { g_recentSpoken[s] = 1; continue; }
+        if (now - g_recentT[s] < 250) return;
     }
     for (int k = start; k < g_nrecent; k++) {
         int s = k % NRECENT;
         if (g_recentSpoken[s]) continue;
         g_recentSpoken[s] = 1;
         Entry* e = &g_ent[g_recent[s]];
-        if (e->gen != g_recentGen[s] || is_busy(e, now) || !e->text[0] || no_letters(e->text)) continue;
+        if (e->gen != g_recentGen[s] || is_busy(e, now) || !e->text[0] || (no_letters(e->text) && !is_price(e->path))) continue;
         if (ends_with_colon(e->text)) continue;   /* a label waiting for its value, e.g. "WINS:" */
         if (now - g_lastTime < 3000 && wlen(e->text) >= 8 && contains_w(g_last, e->text)) continue;   /* just said it */
         int dup = 0; for (int i = 0; i < nc; i++) if (cand[i] == e) dup = 1;   /* only its latest value */
@@ -792,9 +851,27 @@ static void auto_read(DWORD now)
     /* many texts at once = a whole screen loaded: read only its title / message */
     for (int i = 0; i < nc; i++) {
         Entry* e = cand[i];
-        int titleish = is_titleish(e->path);
+        int titleish = is_titleish(e->path) || is_prompt(e->path) || is_price(e->path);
         if (nc > 6 && !titleish) continue;
         if (count < 8) add_part(out, 2048, e->text, &count);
+        /* a popup question: also read its choices, even if they are the same as last time */
+        if (contains_ci(e->path, "msgBox") || contains_ci(e->path, "popup")) {
+            static wchar root[PATHMAX]; int d = 0, k = 0;
+            for (; e->path[k] && k < PATHMAX - 1; k++) { if (e->path[k] == '.' && ++d == 2) break; root[k] = e->path[k]; }
+            root[k] = 0;
+            Entry* opt[8]; int no = 0;
+            for (int pass = 0; pass < 2 && no == 0; pass++)   /* pass 1: game didn't re-send them */
+                for (int j = 0; j < NENT && no < 8; j++) {
+                    Entry* o = &g_ent[j];
+                    if (o == e || !o->used || !o->text[0] || !is_child_path(o->path, root)) continue;
+                    if (pass == 0 && ((int)(o->touched - e->touched) < -400 || (int)(o->touched - e->touched) > 400)) continue;
+                    if (pass == 1 && !contains_ci(o->path, "option")) continue;
+                    if (ends_with_colon(o->text)) continue;
+                    opt[no++] = o;
+                }
+            for (int a = 1; a < no; a++) for (int b = a; b > 0 && path_less(opt[b]->path, opt[b-1]->path); b--) { Entry* t = opt[b]; opt[b] = opt[b-1]; opt[b-1] = t; }
+            for (int a = 0; a < no; a++) add_part(out, 2048, opt[a]->text, &count);
+        }
     }
     if (out[0]) say(out, 0);
 }

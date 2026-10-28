@@ -1,4 +1,4 @@
-MKX Access 0.4.3 - screen reader support for Mortal Kombat X
+MKX Access 0.4.4 - screen reader support for Mortal Kombat X
 =============================================================
 
 MKX Access makes Mortal Kombat X (Steam, PC) speak through the NVDA
@@ -44,13 +44,24 @@ Online
   "WAITING FOR OPPONENT", "MATCH FOUND".
 - Your opponent's name, ping, and the accept and decline buttons.
 
+The Krypt
+- Tips and messages, such as "Welcome to The Krypt!".
+- Button prompts as they appear: "A, Open Tomb", and prices:
+  "1,280, A, Purchase".
+- Your location as you walk: "Krypt Gateway (0, 1)".
+- Rewards, such as "YOU HAVE BEEN AWARDED, 4,000 KOINS".
+- The pause screen's tab and its button options:
+  "JOURNAL, X, return to Krypt entrance, Y, quit to main menu, B, back".
+
 Messages and popups
 - Pop-up questions and their choices, for example:
   "Are you sure you want to quit the game?, YES, A, NO, B".
+- Button prompts that screens show, for example "B, back".
 - Loading and status messages such as "Updating Game Data...".
 
 What it leaves out, to keep things quiet
-- Timers, scores and other numbers that change constantly.
+- Timers, scores and other numbers that change constantly, such as
+  the Krypt clock.
 - The WB Play news panel and the online news ticker.
 - The practice mode input history.
 
