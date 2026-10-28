@@ -5,12 +5,12 @@ game's menus aloud through [NVDA](https://www.nvaccess.org/): menu items and the
 descriptions, option names with their values, character and variation select,
 move lists, and popup messages.
 
-Status: early testing (version 0.4.1). Feedback is very welcome; see
+Status: early testing (version 0.4.2). Feedback is very welcome; see
 [Reporting problems](#reporting-problems).
 
 ## Install
 
-1. Download [MKXAccess-0.4.1.zip](download/MKXAccess-0.4.1.zip?raw=true), the latest test version.
+1. Download [MKXAccess-0.4.2.zip](download/MKXAccess-0.4.2.zip?raw=true), the latest test version.
 2. In Steam, right-click Mortal Kombat X, choose **Manage**, then **Browse local files**.
 3. Open **Binaries**, then **Retail** (the folder with `MK10.exe`).
 4. Copy these files from the zip into that folder:

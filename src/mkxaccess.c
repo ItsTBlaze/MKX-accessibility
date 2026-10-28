@@ -9,7 +9,7 @@
    Everything is also written to MKXAccess.log next to the game exe. */
 #include "win.h"
 
-#define VERSION L"0.4.1"
+#define VERSION L"0.4.2"
 #define IMAGE_BASE 0x140000000ULL
 
 /* ------------------------------------------------------------------ */
@@ -337,8 +337,29 @@ static int starts_ci(const wchar* s, const char* p)
 }
 
 /* strips <html tags>, decodes common entities, collapses whitespace */
-static void clean_text(const wchar* in, wchar* out, int max)
+/* some callers hand over 8-bit text where 16-bit is expected; every 16-bit
+   unit then holds two printable ASCII bytes (U+4544 = "DE") */
+static void fix_packed_ansi(const wchar* in, wchar* out, int max)
 {
+    int n = wlen(in), packed = n > 0;
+    for (int i = 0; i < n && packed; i++) {
+        wchar c = in[i]; BYTE lo = (BYTE)(c & 0xFF), hi = (BYTE)(c >> 8);
+        if (!(lo >= 0x20 && lo < 0x7F && ((hi >= 0x20 && hi < 0x7F) || (hi == 0 && i == n - 1)))) packed = 0;
+    }
+    if (!packed || n == 1) { wcpy(out, in, max); return; }
+    int o = 0;
+    for (int i = 0; i < n && o < max - 2; i++) {
+        out[o++] = in[i] & 0xFF;
+        if (in[i] >> 8) out[o++] = in[i] >> 8;
+    }
+    out[o] = 0;
+}
+
+static void clean_text(const wchar* in0, wchar* out, int max)
+{
+    static wchar fixed[TEXTMAX];
+    fix_packed_ansi(in0, fixed, TEXTMAX);
+    const wchar* in = fixed;
     int o = 0, space = 1;
     for (int i = 0; in[i] && o < max - 1; i++) {
         wchar c = in[i];
@@ -508,6 +529,10 @@ static wchar g_focusPath[PATHMAX];
 static DWORD g_focusTime; static int g_focusPending;
 static int g_gridX = -1, g_gridY = -1;
 static wchar g_lastFocus[PATHMAX]; static DWORD g_lastFocusT;
+static wchar g_focusItem[PATHMAX];   /* parent holding the focused item's labels */
+
+static int is_child_path(const wchar* child, const wchar* parent);
+static void say(const wchar* raw, int interrupt);
 
 static void handle_text(Event* ev)
 {
@@ -527,6 +552,11 @@ static void handle_text(Event* ev)
     e->winCount++;
     e->changed = now;
     if (!clean[0] || ignored_path(e->path)) return;
+    /* a value of the item you are on changed (volume 45 -> 44, ON -> OFF): say it now */
+    if (!g_focusPending && g_focusItem[0] && is_child_path(e->path, g_focusItem) && !ends_with_colon(clean)) {
+        say(clean, 1);
+        return;
+    }
     int slot = g_nrecent % NRECENT;
     g_recent[slot] = (int)(e - g_ent); g_recentGen[slot] = e->gen; g_recentT[slot] = now; g_recentSpoken[slot] = 0;
     g_nrecent++;
@@ -608,6 +638,23 @@ static int path_less(const wchar* a, const wchar* b)
     return *a == 0 && *b != 0;
 }
 
+/* labels first, values last, otherwise screen order: "EFFECTS, 90" not "90, EFFECTS" */
+static int item_rank(const wchar* p)
+{
+    const wchar* last = p; int dots = 0;
+    for (const wchar* q = p; *q; q++) if (*q == '.') dots++;
+    (void)last; (void)dots;
+    if (contains_ci(p, "Label") || contains_ci(p, "Title") || contains_ci(p, "Name") || contains_ci(p, "Header")) return 0;
+    if (contains_ci(p, "Value") || contains_ci(p, "Cursor") || contains_ci(p, ".Txt") || contains_ci(p, "Amount")) return 2;
+    return 1;
+}
+static int item_less(const wchar* a, const wchar* b)
+{
+    int ra = item_rank(a), rb = item_rank(b);
+    if (ra != rb) return ra < rb;
+    return path_less(a, b);
+}
+
 static int count_children(const wchar* parent)
 {
     int n = 0;
@@ -623,6 +670,7 @@ static void announce_focus(void)
           so climb up until we reach a parent that holds 1-4 text items */
     static wchar anc[PATHMAX];
     wcpy(anc, g_focusPath, PATHMAX);
+    g_focusItem[0] = 0;
     for (int level = 0; level < 4 && anc[0]; level++) {
         int n = count_children(anc);
         if (n >= 1 && n <= 4) {
@@ -632,7 +680,8 @@ static void announce_focus(void)
                 Entry* e = &g_ent[i];
                 if (e->used && e->text[0] && is_child_path(e->path, anc)) items[ni++] = e;
             }
-            for (int a = 1; a < ni; a++) for (int b = a; b > 0 && path_less(items[b]->path, items[b-1]->path); b--) { Entry* t = items[b]; items[b] = items[b-1]; items[b-1] = t; }
+            for (int a = 1; a < ni; a++) for (int b = a; b > 0 && item_less(items[b]->path, items[b-1]->path); b--) { Entry* t = items[b]; items[b] = items[b-1]; items[b-1] = t; }
+            wcpy(g_focusItem, anc, PATHMAX);
             for (int a = 0; a < ni; a++) add_part(out, 2048, items[a]->text, &count);
             break;
         }
