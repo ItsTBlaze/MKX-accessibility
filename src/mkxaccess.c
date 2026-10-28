@@ -9,7 +9,7 @@
    Everything is also written to MKXAccess.log next to the game exe. */
 #include "win.h"
 
-#define VERSION L"0.4.2"
+#define VERSION L"0.4.3"
 #define IMAGE_BASE 0x140000000ULL
 
 /* ------------------------------------------------------------------ */
@@ -100,7 +100,7 @@ static void q_end(void)
 /* ------------------------------------------------------------------ */
 /* hooks (run on the game thread: keep them fast)                      */
 /* last text hash per element, so re-setting the same text costs almost nothing */
-typedef struct { u64 self; DWORD hash; } LastSet;
+typedef struct { u64 self; DWORD hash, t; } LastSet;
 static LastSet g_lastSet[2048];
 static int same_as_last(void* self, const wchar* s, int salt)
 {
@@ -108,8 +108,11 @@ static int same_as_last(void* self, const wchar* s, int salt)
     if (s) for (int i = 0; s[i] && i < TEXTMAX; i++) { h ^= s[i]; h *= 16777619u; }
     LastSet* c = &g_lastSet[((u64)self >> 4) & 2047];
     g_statCalls++;
-    if (c->self == (u64)self && c->hash == h) { g_statDeduped++; return 1; }
-    c->self = (u64)self; c->hash = h;
+    DWORD now = GetTickCount();
+    /* only drop rapid repeats: a page that re-sets the same text a second later
+       (being rebuilt) still has to be seen, so the mod knows the text is current */
+    if (c->self == (u64)self && c->hash == h && now - c->t < 1000) { g_statDeduped++; return 1; }
+    c->self = (u64)self; c->hash = h; c->t = now;
     return 0;
 }
 
@@ -490,7 +493,7 @@ static int ignored_path(const wchar* p)
 
 /* ------------------------------------------------------------------ */
 /* text table (worker thread only), keyed by element path              */
-typedef struct { u64 key; wchar path[PATHMAX]; wchar text[TEXTMAX]; DWORD changed, winStart; int winCount, used, gen; } Entry;
+typedef struct { u64 key; wchar path[PATHMAX]; wchar text[TEXTMAX]; DWORD changed, touched, winStart; int winCount, used, gen; } Entry;
 #define NENT 4096
 #define PROBE 64
 static Entry* g_ent;
@@ -516,7 +519,7 @@ static Entry* find_entry(u64 key)
     }
     /* new entry (or recycle the oldest one nearby) */
     Entry* e = oldest;
-    e->used = 1; e->key = key; e->path[0] = 0; e->text[0] = 0; e->winCount = 0; e->winStart = 0; e->changed = GetTickCount();
+    e->used = 1; e->key = key; e->path[0] = 0; e->text[0] = 0; e->winCount = 0; e->winStart = 0; e->changed = e->touched = GetTickCount();
     e->gen = ++g_gen;
     return e;
 }
@@ -530,6 +533,8 @@ static DWORD g_focusTime; static int g_focusPending;
 static int g_gridX = -1, g_gridY = -1;
 static wchar g_lastFocus[PATHMAX]; static DWORD g_lastFocusT;
 static wchar g_focusItem[PATHMAX];   /* parent holding the focused item's labels */
+static void* g_valEntry; static int g_valGen; static DWORD g_valT;   /* value change waiting to be said */
+static DWORD g_burstT; static int g_burstN;                           /* texts set within 50 ms */
 
 static int is_child_path(const wchar* child, const wchar* parent);
 static void say(const wchar* raw, int interrupt);
@@ -544,7 +549,8 @@ static void handle_text(Event* ev)
     if (!key) return;
     Entry* e = find_entry(key);
     if (ev->path[0]) wcpy(e->path, ev->path, PATHMAX);
-    if (weq(e->text, clean)) return;           /* unchanged: ignore */
+    e->touched = ev->t;                        /* set again, even if unchanged: still current */
+    if (weq(e->text, clean)) return;           /* unchanged: nothing new to say */
     logf3(tag, e->path[0] ? e->path : (const wchar*)L"?", clean);
     wcpy(e->text, clean, TEXTMAX);
     DWORD now = ev->t;
@@ -552,9 +558,12 @@ static void handle_text(Event* ev)
     e->winCount++;
     e->changed = now;
     if (!clean[0] || ignored_path(e->path)) return;
-    /* a value of the item you are on changed (volume 45 -> 44, ON -> OFF): say it now */
+    /* a value of the item you are on changed (volume 45 -> 44, ON -> OFF): say it right
+       away, unless a whole page is being filled in at this moment (checked in the loop) */
+    if (ev->t - g_burstT > 50) { g_burstT = ev->t; g_burstN = 0; }
+    g_burstN++;
     if (!g_focusPending && g_focusItem[0] && is_child_path(e->path, g_focusItem) && !ends_with_colon(clean)) {
-        say(clean, 1);
+        g_valEntry = e; g_valGen = e->gen; g_valT = ev->t;
         return;
     }
     int slot = g_nrecent % NRECENT;
@@ -655,6 +664,23 @@ static int item_less(const wchar* a, const wchar* b)
     return path_less(a, b);
 }
 
+/* when was this list last filled in? = the newest moment when 3 or more of its
+   texts were set within 300 ms of each other (a page being built), 0 if never */
+static DWORD last_rebuild(const wchar* list)
+{
+    static DWORD t[512]; int n = 0;
+    for (int i = 0; i < NENT && n < 512; i++) { Entry* e = &g_ent[i]; if (e->used && is_child_path(e->path, list)) t[n++] = e->touched; }
+    for (int a = 1; a < n; a++) for (int b = a; b > 0 && (int)(t[b] - t[b-1]) > 0; b--) { DWORD x = t[b]; t[b] = t[b-1]; t[b-1] = x; }   /* newest first */
+    for (int i = 0; i + 2 < n; i++) {
+        if (t[i] - t[i + 2] <= 300) {          /* a cluster starts here; find where it ends */
+            int j = i + 2;
+            while (j + 1 < n && t[i] - t[j + 1] <= 300) j++;
+            return t[j];
+        }
+    }
+    return 0;
+}
+
 static int count_children(const wchar* parent)
 {
     int n = 0;
@@ -671,25 +697,16 @@ static void announce_focus(void)
     static wchar anc[PATHMAX];
     wcpy(anc, g_focusPath, PATHMAX);
     g_focusItem[0] = 0;
+    int found = 0;
     for (int level = 0; level < 4 && anc[0]; level++) {
         int n = count_children(anc);
-        if (n >= 1 && n <= 4) {
-            /* read them in screen order (sorted by path: Title before Value, Text0 before Text1) */
-            Entry* items[4]; int ni = 0;
-            for (int i = 0; i < NENT && ni < 4; i++) {
-                Entry* e = &g_ent[i];
-                if (e->used && e->text[0] && is_child_path(e->path, anc)) items[ni++] = e;
-            }
-            for (int a = 1; a < ni; a++) for (int b = a; b > 0 && item_less(items[b]->path, items[b-1]->path); b--) { Entry* t = items[b]; items[b] = items[b-1]; items[b-1] = t; }
-            wcpy(g_focusItem, anc, PATHMAX);
-            for (int a = 0; a < ni; a++) add_part(out, 2048, items[a]->text, &count);
-            break;
-        }
-        if (n > 4) { anc[0] = 0; break; }   /* reached the whole list: stop */
+        if (n >= 1 && n <= 4) { found = 1; break; }
+        if (n > 4) break;   /* reached the whole list: stop */
         int L = wlen(anc); while (L > 0 && anc[L - 1] != '.') L--;
-        if (L <= 1) { anc[0] = 0; break; }
+        if (L <= 1) break;
         anc[L - 1] = 0;
     }
+    if (!found) anc[0] = 0;
     /* the list that holds the focused item: its other items are not read */
     static wchar list[PATHMAX]; list[0] = 0;
     if (anc[0]) {
@@ -701,6 +718,30 @@ static void announce_focus(void)
             if (count_children(list) > 4) break;
             if (level == 2) list[0] = 0;
         }
+    }
+    if (anc[0]) {
+        /* pages that share slots (Audio and Gameplay options both use Cell_0...) leave the
+           old page's text behind, hidden. Only keep text set since the list was last filled. */
+        DWORD rebuilt = list[0] ? last_rebuild(list) : 0;
+        Entry* all[8]; int na = 0;
+        for (int i = 0; i < NENT && na < 8; i++) {
+            Entry* e = &g_ent[i];
+            if (e->used && e->text[0] && is_child_path(e->path, anc)) all[na++] = e;
+        }
+        /* an old text is a leftover only if a newer text of the same kind (name or value)
+           replaced it. After "reset to default" only values are new, so names still count. */
+        int freshRank[3] = {0, 0, 0};
+        for (int a = 0; a < na; a++) if (!rebuilt || (int)(all[a]->touched - rebuilt) >= -150) freshRank[item_rank(all[a]->path)] = 1;
+        Entry* items[4]; int ni = 0;
+        for (int a = 0; a < na && ni < 4; a++) {
+            int old = rebuilt && (int)(all[a]->touched - rebuilt) < -150;
+            if (old && freshRank[item_rank(all[a]->path)]) continue;   /* left over from another page */
+            items[ni++] = all[a];
+        }
+        /* label first, value last, otherwise screen order */
+        for (int a = 1; a < ni; a++) for (int b = a; b > 0 && item_less(items[b]->path, items[b-1]->path); b--) { Entry* t = items[b]; items[b] = items[b-1]; items[b-1] = t; }
+        wcpy(g_focusItem, anc, PATHMAX);
+        for (int a = 0; a < ni; a++) add_part(out, 2048, items[a]->text, &count);
     }
     /* 2. text that changed right after the focus moved (descriptions, character names) */
     int start = g_nrecent > NRECENT ? g_nrecent - NRECENT : 0;
@@ -720,7 +761,7 @@ static void announce_focus(void)
         g_recentSpoken[s] = 1;
         Entry* e = &g_ent[g_recent[s]];
         if (e->gen != g_recentGen[s] || !e->text[0]) continue;
-        if (list[0] && is_child_path(e->path, list) && !(anc[0] && is_child_path(e->path, anc)) && !contains_ci(e->path, "title")) continue;
+        if (list[0] && is_child_path(e->path, list) && !(anc[0] && is_child_path(e->path, anc)) && !is_titleish(e->path)) continue;
         if (no_letters(e->text) && !(anc[0] && is_child_path(e->path, anc))) continue;
         add_part(out, 2048, e->text, &count);
     }
@@ -797,6 +838,7 @@ static void handle_focus(Event* ev)
     wcpy(g_focusPath, ev->path, PATHMAX);
     g_focusTime = ev->t;
     g_focusPending = 1;
+    g_valEntry = 0;   /* the focus announcement will include it */
 }
 
 /* ------------------------------------------------------------------ */
@@ -827,6 +869,18 @@ static void poll_keys(void)
 }
 
 /* ------------------------------------------------------------------ */
+/* the timing side of the speech logic, run every 25 ms (also used by test/harness.c) */
+static void speech_tick(DWORD now)
+{
+    if (g_valEntry && now - g_valT >= 40) {
+        Entry* e = (Entry*)g_valEntry; g_valEntry = 0;
+        int pageLoad = (g_burstT - g_valT < 60) && g_burstN > 3;
+        if (!g_focusPending && !pageLoad && e->gen == g_valGen && e->text[0]) say(e->text, 1);
+    }
+    if (g_focusPending && now - g_focusTime >= 120) { g_focusPending = 0; announce_focus(); }
+    auto_read(now);
+}
+
 static DWORD WINAPI worker(void* arg)
 {
     wchar p[MAX_PATH];
@@ -877,8 +931,7 @@ static DWORD WINAPI worker(void* arg)
                 if (nv_speak) nv_speak(hello);   /* queued after whatever NVDA is saying */
             }
         }
-        if (g_focusPending && now - g_focusTime >= 120) { g_focusPending = 0; announce_focus(); }
-        auto_read(now);
+        speech_tick(now);
         poll_keys();
         if (now - lastFlush > 2000) { if (g_log != INVALID_HANDLE_VALUE) FlushFileBuffers(g_log); lastFlush = now; }
         if (now - lastStats > 60000) {

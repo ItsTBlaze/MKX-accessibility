@@ -28,7 +28,7 @@ HANDLE WINAPI CreateFileW(LPCWSTR a,DWORD b,DWORD c,void*d,DWORD e,DWORD f,HANDL
 HANDLE WINAPI FindFirstFileW(LPCWSTR a,WIN32_FIND_DATAW*b){return 0;} BOOL WINAPI FindNextFileW(HANDLE a,WIN32_FIND_DATAW*b){return 0;} BOOL WINAPI FindClose(HANDLE a){return 0;}
 UINT WINAPI GetSystemDirectoryW(LPWSTR a,UINT b){return 0;} BOOL WINAPI DisableThreadLibraryCalls(HMODULE a){return 0;}
 short WINAPI GetAsyncKeyState(int a){return 0;} HWND WINAPI GetForegroundWindow(void){return 0;} DWORD WINAPI GetWindowThreadProcessId(HWND a,DWORD*b){return 0;}
-static void tick(void){ if (g_focusPending && g_clock - g_focusTime >= 120) { g_focusPending = 0; announce_focus(); } auto_read(g_clock); }
+static void tick(void){ speech_tick(g_clock); }
 int main(int argc,char**argv){
   g_ent=calloc(NENT,sizeof(Entry)); g_log=(HANDLE)1;
   FILE* f=fopen(argv[1],"r"); char line[8192]; static Event ev;
