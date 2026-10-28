@@ -9,7 +9,7 @@
    Everything is also written to MKXAccess.log next to the game exe. */
 #include "win.h"
 
-#define VERSION L"0.4"
+#define VERSION L"0.4.1"
 #define IMAGE_BASE 0x140000000ULL
 
 /* ------------------------------------------------------------------ */
@@ -799,8 +799,9 @@ static DWORD WINAPI worker(void* arg)
     } else log_w((const wchar*)L"nvdaControllerClient64.dll not found - speech disabled, logging only");
 
     int okCount = 0; for (int i = 0; i < NHOOKS; i++) if (g_hookOk[i] == 1) okCount++;
-    speak_force(okCount == NHOOKS ? (const wchar*)L"MKX Access loaded" :
-                okCount ? (const wchar*)L"MKX Access loaded with some hooks missing" : (const wchar*)L"MKX Access could not hook this game version");
+    const wchar* hello = okCount == NHOOKS ? (const wchar*)L"MKX Access loaded" :
+                okCount ? (const wchar*)L"MKX Access loaded with some hooks missing" : (const wchar*)L"MKX Access could not hook this game version";
+    int announced = 0, frontSince = 0; DWORD frontT = 0;
 
     DWORD lastFlush = GetTickCount(), lastStats = GetTickCount();
     for (;;) {
@@ -816,6 +817,17 @@ static DWORD WINAPI worker(void* arg)
             else handle_focus(&ev);
         }
         DWORD now = GetTickCount();
+        /* say hello once the game window has been in front for 2 seconds (NVDA is done
+           announcing the window by then), or after 30 seconds at the latest */
+        if (!announced) {
+            if (game_in_front()) { if (!frontSince) { frontSince = 1; frontT = now; } }
+            else frontSince = 0;
+            if ((frontSince && now - frontT >= 2000) || now - g_t0 >= 30000) {
+                announced = 1;
+                logf3((const wchar*)L"SPEAK", 0, hello);
+                if (nv_speak) nv_speak(hello);   /* queued after whatever NVDA is saying */
+            }
+        }
         if (g_focusPending && now - g_focusTime >= 120) { g_focusPending = 0; announce_focus(); }
         auto_read(now);
         poll_keys();
