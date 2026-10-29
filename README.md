@@ -5,19 +5,19 @@ game's menus aloud through [NVDA](https://www.nvaccess.org/): menu items and the
 descriptions, option names with their values, character and variation select,
 move lists, and popup messages.
 
-Status: early testing (version 0.4.6). Feedback is very welcome; see
+Status: early testing (version 0.4.7). Feedback is very welcome; see
 [Reporting problems](#reporting-problems).
 
 ## Install
 
 1. Download **[MKXAccess.zip](https://github.com/ItsTBlaze/MKX-accessibility/raw/main/download/MKXAccess.zip)**.
-   This link always gets the newest version (currently 0.4.6).
+   This link always gets the newest version (currently 0.4.7).
 2. Unzip it, and make sure Mortal Kombat X is closed.
 3. Open the unzipped MKXAccess folder and run **Install**. It finds the game on its
    own and tells you when it's done. Windows may ask whether to run a file from the
    internet: choose **Run**, or **More info** then **Run anyway**.
 4. Start NVDA, then start the game. About 2 seconds after the game window appears
-   you will hear "MKX Access loaded".
+   you will hear "MKX Access" followed by the version number and "loaded".
 
 To update, download the new zip and run its Install the same way. To remove the
 mod, run **Uninstall** from the same folder.
@@ -37,6 +37,7 @@ These only work while the game window is in front.
 | F6 | Read everything on the current screen |
 | F7 | Turn auto-reading of new text on or off |
 | F8 | Mute or unmute the mod |
+| F9 | Say which version of the mod is running |
 
 ## Reporting problems
 

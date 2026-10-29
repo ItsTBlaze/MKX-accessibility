@@ -6,10 +6,11 @@
      F6  read everything currently known on screen
      F7  toggle auto-reading of new text that is not tied to focus
      F8  mute / unmute MKX Access
+     F9  say which version of MKX Access is running
    Everything is also written to MKXAccess.log next to the game exe. */
 #include "win.h"
 
-#define VERSION L"0.4.6"
+#define VERSION L"0.4.7"
 #define FOCUS_DELAY 70   /* ms to wait after focus moves, for descriptions to arrive */
 #define IMAGE_BASE 0x140000000ULL
 
@@ -970,8 +971,9 @@ static int pressed(int vk)
 static void poll_keys(void)
 {
     int front = game_in_front();
-    int f5 = pressed(0x74), f6 = pressed(0x75), f7 = pressed(0x76), f8 = pressed(0x77);
+    int f5 = pressed(0x74), f6 = pressed(0x75), f7 = pressed(0x76), f8 = pressed(0x77), f9 = pressed(0x78);
     if (!front) return;
+    if (f9) speak_force((const wchar*)(L"MKX Access version " VERSION));
     if (f5) { static wchar again[2048]; wcpy(again, g_last[0] ? g_last : (const wchar*)L"Nothing yet", 2048); speak(again, 1); }
     if (f6) read_screen();
     if (f7) { g_autoRead = !g_autoRead; speak_force(g_autoRead ? (const wchar*)L"Auto read on" : (const wchar*)L"Auto read off"); }
@@ -1012,8 +1014,9 @@ static DWORD WINAPI worker(void* arg)
     } else log_w((const wchar*)L"nvdaControllerClient64.dll not found - speech disabled, logging only");
 
     int okCount = 0; for (int i = 0; i < NHOOKS; i++) if (g_hookOk[i] == 1) okCount++;
-    const wchar* hello = okCount == NHOOKS ? (const wchar*)L"MKX Access loaded" :
-                okCount ? (const wchar*)L"MKX Access loaded with some hooks missing" : (const wchar*)L"MKX Access could not hook this game version";
+    const wchar* hello = okCount == NHOOKS ? (const wchar*)(L"MKX Access " VERSION L" loaded") :
+                okCount ? (const wchar*)(L"MKX Access " VERSION L" loaded with some hooks missing") :
+                          (const wchar*)(L"MKX Access " VERSION L" could not hook this game version");
     int announced = 0, frontSince = 0; DWORD frontT = 0;
 
     DWORD lastFlush = GetTickCount(), lastStats = GetTickCount();

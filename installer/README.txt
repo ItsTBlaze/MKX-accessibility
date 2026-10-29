@@ -1,4 +1,4 @@
-MKX Access 0.4.6 - screen reader support for Mortal Kombat X
+MKX Access 0.4.7 - screen reader support for Mortal Kombat X
 =============================================================
 
 MKX Access makes Mortal Kombat X (Steam, PC) speak through the NVDA
@@ -74,6 +74,7 @@ HOTKEYS (only while the game window is in front)
   F7  turn auto-reading of new text on or off. Menus still read
       when this is off.
   F8  mute or unmute the mod
+  F9  say which version of the mod is running
 
 
 KNOWN LIMITS
