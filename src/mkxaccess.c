@@ -9,7 +9,8 @@
    Everything is also written to MKXAccess.log next to the game exe. */
 #include "win.h"
 
-#define VERSION L"0.4.5"
+#define VERSION L"0.4.6"
+#define FOCUS_DELAY 70   /* ms to wait after focus moves, for descriptions to arrive */
 #define IMAGE_BASE 0x140000000ULL
 
 /* ------------------------------------------------------------------ */
@@ -505,6 +506,11 @@ static int is_prompt(const wchar* p)
     return contains_ci(p, "navText") || contains_ci(p, "helpText") || contains_ci(p, "buttonPrompt") ||
            contains_ci(p, "ButtonText") || contains_ci(p, "hintText") || contains_ci(p, ".help.");
 }
+static int is_popup_message(const wchar* p)
+{
+    return (contains_ci(p, "msgBox") || contains_ci(p, "popup") || contains_ci(p, "dialog")) &&
+           (contains_ci(p, "mainText") || contains_ci(p, "messaging") || contains_ci(p, "message"));
+}
 static int is_price(const wchar* p) { return contains_ci(p, "cost") || contains_ci(p, "price"); }
 static int ends_with_colon(const wchar* t) { int n = wlen(t); return n > 0 && t[n - 1] == ':'; }
 static int ignored_path(const wchar* p)
@@ -586,9 +592,18 @@ static void handle_text(Event* ev)
     if (!key) return;
     Entry* e = find_entry(key);
     if (ev->path[0]) wcpy(e->path, ev->path, PATHMAX);
+    DWORD prevTouched = e->touched;
     e->touched = ev->t;                        /* set again, even if unchanged: still current */
-    if (weq(e->text, clean)) return;           /* unchanged: nothing new to say */
-    logf3(tag, e->path[0] ? e->path : (const wchar*)L"?", clean);
+    int again = 0;
+    if (weq(e->text, clean)) {
+        /* a popup asking the same question again ("Do you want to save your changes?")
+           is new to the player even though the words are the same. A popup that is
+           simply re-set while it stays up (every frame, let through once a second)
+           has no quiet gap before it and is not repeated. */
+        if (!(clean[0] && is_popup_message(e->path) && ev->t - prevTouched > 1500)) return;
+        again = 1;
+    }
+    logf3(again ? (const wchar*)L"TEXT-AGAIN" : tag, e->path[0] ? e->path : (const wchar*)L"?", clean);
     wcpy(e->text, clean, TEXTMAX);
     DWORD now = ev->t;
     if (now - e->winStart > 4000) { e->winStart = now; e->winCount = 0; }
@@ -694,6 +709,7 @@ static int item_rank(const wchar* p)
     if (contains_ci(p, "Value") || contains_ci(p, "Cursor") || contains_ci(p, ".Txt") || contains_ci(p, "Amount")) return 2;
     return 1;
 }
+static int item_kind(const wchar* p) { return item_rank(p) == 2 ? 1 : 0; }
 static int item_less(const wchar* a, const wchar* b)
 {
     int ra = item_rank(a), rb = item_rank(b);
@@ -767,12 +783,13 @@ static void announce_focus(void)
         }
         /* an old text is a leftover only if a newer text of the same kind (name or value)
            replaced it. After "reset to default" only values are new, so names still count. */
+        /* kinds: 0 = a name (MeterLabel, ToggleText, Title...), 1 = a value */
         int freshRank[3] = {0, 0, 0};
-        for (int a = 0; a < na; a++) if (!rebuilt || (int)(all[a]->touched - rebuilt) >= -150) freshRank[item_rank(all[a]->path)] = 1;
+        for (int a = 0; a < na; a++) if (!rebuilt || (int)(all[a]->touched - rebuilt) >= -150) freshRank[item_kind(all[a]->path)] = 1;
         Entry* items[4]; int ni = 0;
         for (int a = 0; a < na && ni < 4; a++) {
             int old = rebuilt && (int)(all[a]->touched - rebuilt) < -150;
-            if (old && freshRank[item_rank(all[a]->path)]) continue;   /* left over from another page */
+            if (old && freshRank[item_kind(all[a]->path)]) continue;   /* left over from another page */
             items[ni++] = all[a];
         }
         /* label first, value last, otherwise screen order */
@@ -875,7 +892,8 @@ static void auto_read(DWORD now)
             for (; e->path[k] && k < PATHMAX - 1; k++) { if (e->path[k] == '.' && ++d == 2) break; root[k] = e->path[k]; }
             root[k] = 0;
             Entry* opt[8]; int no = 0;
-            for (int pass = 0; pass < 2 && no == 0; pass++)   /* pass 1: game didn't re-send them */
+            int question = wlen(e->text) > 0 && e->text[wlen(e->text) - 1] == '?';
+            for (int pass = 0; pass < (question ? 2 : 1) && no == 0; pass++)   /* pass 1: a question whose choices weren't re-sent */
                 for (int j = 0; j < NENT && no < 8; j++) {
                     Entry* o = &g_ent[j];
                     if (o == e || !o->used || !o->text[0] || !is_child_path(o->path, root)) continue;
@@ -969,7 +987,7 @@ static void speech_tick(DWORD now)
         int pageLoad = (g_burstT - g_valT < 60) && g_burstN > 3;
         if (!g_focusPending && !pageLoad && e->gen == g_valGen && e->text[0]) say(e->text, 1);
     }
-    if (g_focusPending && now - g_focusTime >= 120) { g_focusPending = 0; announce_focus(); }
+    if (g_focusPending && now - g_focusTime >= FOCUS_DELAY) { g_focusPending = 0; announce_focus(); }
     auto_read(now);
 }
 
