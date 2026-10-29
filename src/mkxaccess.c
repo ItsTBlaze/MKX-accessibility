@@ -9,7 +9,7 @@
    Everything is also written to MKXAccess.log next to the game exe. */
 #include "win.h"
 
-#define VERSION L"0.4.4"
+#define VERSION L"0.4.5"
 #define IMAGE_BASE 0x140000000ULL
 
 /* ------------------------------------------------------------------ */
@@ -99,35 +99,44 @@ static void q_end(void)
 
 /* ------------------------------------------------------------------ */
 /* hooks (run on the game thread: keep them fast)                      */
-/* last text hash per element, so re-setting the same text costs almost nothing */
-typedef struct { u64 self; DWORD hash, t; } LastSet;
+/* last text per label, so re-setting the same text costs almost nothing.
+   Keyed by the label's path, NOT by the UITextItem pointer: the game reuses one
+   temporary UITextItem for many labels in a row, so "OFF" then "OFF" on two
+   different settings came from the same pointer and the second was lost. */
+typedef struct { DWORD key, hash, t; } LastSet;
 static LastSet g_lastSet[2048];
-static int same_as_last(void* self, const wchar* s, int salt)
+static int same_as_last(void* self, const wchar* s, int salt, wchar* pathOut)
 {
+    path_of(self, pathOut);                      /* needed for the event anyway */
+    DWORD k = 2166136261u;
+    for (int i = 0; pathOut[i]; i++) { k ^= pathOut[i]; k *= 16777619u; }
+    if (!pathOut[0]) k ^= (DWORD)((u64)self >> 4);
     DWORD h = 2166136261u ^ (DWORD)salt;
     if (s) for (int i = 0; s[i] && i < TEXTMAX; i++) { h ^= s[i]; h *= 16777619u; }
-    LastSet* c = &g_lastSet[((u64)self >> 4) & 2047];
-    g_statCalls++;
+    LastSet* c = &g_lastSet[(k ^ (k >> 11)) & 2047];
     DWORD now = GetTickCount();
+    g_statCalls++;
     /* only drop rapid repeats: a page that re-sets the same text a second later
        (being rebuilt) still has to be seen, so the mod knows the text is current */
-    if (c->self == (u64)self && c->hash == h && now - c->t < 1000) { g_statDeduped++; return 1; }
-    c->self = (u64)self; c->hash = h; c->t = now;
+    if (c->key == k && c->hash == h && now - c->t < 1000) { g_statDeduped++; return 1; }
+    c->key = k; c->hash = h; c->t = now;
     return 0;
 }
 
 static void hk_setText(void* self, const wchar* s)
 {
-    if (same_as_last(self, s, 1)) { o_setText(self, s); return; }
+    wchar path[PATHMAX];
+    if (same_as_last(self, s, 1, path)) { o_setText(self, s); return; }
     Event* e = q_begin();
-    if (e) { e->type = EV_TEXT; e->id = (u64)self; path_of(self, e->path); if (s) wcpy(e->text, s, TEXTMAX); q_end(); }
+    if (e) { e->type = EV_TEXT; e->id = (u64)self; wcpy(e->path, path, PATHMAX); if (s) wcpy(e->text, s, TEXTMAX); q_end(); }
     o_setText(self, s);
 }
 static DWORD hk_setTextHTML(void* self, const wchar* s)
 {
-    if (same_as_last(self, s, 2)) return o_setTextHTML(self, s);
+    wchar path[PATHMAX];
+    if (same_as_last(self, s, 2, path)) return o_setTextHTML(self, s);
     Event* e = q_begin();
-    if (e) { e->type = EV_HTML; e->id = (u64)self; path_of(self, e->path); if (s) wcpy(e->text, s, TEXTMAX); q_end(); }
+    if (e) { e->type = EV_HTML; e->id = (u64)self; wcpy(e->path, path, PATHMAX); if (s) wcpy(e->text, s, TEXTMAX); q_end(); }
     return o_setTextHTML(self, s);
 }
 static BYTE hk_valSetText(void* v, const wchar* s)
@@ -424,6 +433,7 @@ static const char* g_tok[][2] = {
     {"A","A"},{"B","B"},{"X","X"},{"Y","Y"},
     {"LSH","left bumper"},{"RSH","right bumper"},{"LB","left bumper"},{"RB","right bumper"},
     {"LT","left trigger"},{"RT","right trigger"},{"LTR","left trigger"},{"RTR","right trigger"},
+    {"LTRIG","left trigger"},{"RTRIG","right trigger"},{"LTRIGGER","left trigger"},{"RTRIGGER","right trigger"},
     {"LS","left stick"},{"RS","right stick"},{"L3","left stick click"},{"R3","right stick click"},
     {"START","start"},{"BACK","back button"},{"SELECT","select"},{"MENU","menu"},{"VIEW","view"},
     {"U","up"},{"D","down"},{"L","left"},{"R","right"},
@@ -444,6 +454,11 @@ static void speakify(const wchar* in, wchar* out, int max)
 {
     int o = 0;
     for (int i = 0; in[i] && o < max - 40; ) {
+        if (in[i] == '?' && in[i + 1] == '?' && in[i + 2] == '?') {   /* "????????": not unlocked yet */
+            while (in[i] == '?') i++;
+            for (const char* w = "hidden"; *w; w++) out[o++] = (wchar)*w;
+            continue;
+        }
         if (in[i] == '[') {
             int j = i + 1; while (in[j] && in[j] != ']' && j - i < 24) j++;
             if (in[j] == ']') {

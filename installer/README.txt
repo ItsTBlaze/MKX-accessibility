@@ -1,4 +1,4 @@
-MKX Access 0.4.4 - screen reader support for Mortal Kombat X
+MKX Access 0.4.5 - screen reader support for Mortal Kombat X
 =============================================================
 
 MKX Access makes Mortal Kombat X (Steam, PC) speak through the NVDA
@@ -33,6 +33,7 @@ Pause menu and move list
   Button codes are turned into words, for example:
   "Spear, back forward front punch" or "Low Poke, down front punch, Low".
 - Move list section tabs, such as "SPECIAL MOVES".
+- Fatalities you haven't unlocked yet say "hidden" instead of their input.
 
 Practice mode
 - The hit level of your attacks as they land: HIGH, MID, LOW,
