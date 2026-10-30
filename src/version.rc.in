@@ -1,0 +1,29 @@
+1 VERSIONINFO
+FILEVERSION @MAJ@,@MIN@,@PAT@,0
+PRODUCTVERSION @MAJ@,@MIN@,@PAT@,0
+FILEFLAGSMASK 0x3F
+FILEFLAGS 0x0
+FILEOS 0x40004
+FILETYPE 0x2
+FILESUBTYPE 0x0
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    BLOCK "040904B0"
+    BEGIN
+      VALUE "CompanyName", "ItsTBlaze"
+      VALUE "FileDescription", "@DESC@"
+      VALUE "FileVersion", "@VER@"
+      VALUE "InternalName", "@NAME@"
+      VALUE "LegalCopyright", "Copyright (c) 2026 ItsTBlaze. MIT License."
+      VALUE "OriginalFilename", "@FILE@"
+      VALUE "ProductName", "MKX Access"
+      VALUE "ProductVersion", "@VER@"
+      VALUE "Comments", "Screen reader support for Mortal Kombat X. Source: https://github.com/ItsTBlaze/MKX-accessibility"
+    END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x409, 1200
+  END
+END

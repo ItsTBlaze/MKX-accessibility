@@ -10,7 +10,7 @@
    Everything is also written to MKXAccess.log next to the game exe. */
 #include "win.h"
 
-#define VERSION L"0.4.7"
+#define VERSION L"0.4.8"
 #define FOCUS_DELAY 70   /* ms to wait after focus moves, for descriptions to arrive */
 #define IMAGE_BASE 0x140000000ULL
 
@@ -245,7 +245,7 @@ static BYTE* alloc_near(u64 target, SIZE_T size)
         MEMORY_BASIC_INFORMATION mbi;
         if (!VirtualQuery((void*)a, &mbi, sizeof(mbi))) continue;
         if (mbi.State != MEM_FREE) continue;
-        void* p = VirtualAlloc((void*)a, size, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+        void* p = VirtualAlloc((void*)a, size, MEM_COMMIT | MEM_RESERVE, 0x04 /* PAGE_READWRITE */);
         if (p) return (BYTE*)p;
     }
     return 0;
@@ -282,6 +282,10 @@ static void install_hooks(void)
         FlushInstructionCache(GetCurrentProcess(), target, 16);
         g_hookOk[i] = 1;
     }
+    /* trampolines are written: make them run-only, never writable and runnable at once */
+    DWORD old;
+    VirtualProtect(mem, 0x1000, 0x20 /* PAGE_EXECUTE_READ */, &old);
+    FlushInstructionCache(GetCurrentProcess(), mem, 0x1000);
 }
 
 /* ------------------------------------------------------------------ */
