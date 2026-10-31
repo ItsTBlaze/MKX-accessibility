@@ -1,4 +1,4 @@
-MKX Access 0.5.2 - screen reader support for Mortal Kombat X
+MKX Access 0.5.3 - screen reader support for Mortal Kombat X
 =============================================================
 
 MKX Access makes Mortal Kombat X (Steam, PC) speak through the NVDA
@@ -44,6 +44,7 @@ Damage and combos
   each hit's level: "3 hit combo, 8 percent, high, mid, mid".
   Combos that pause mid-string (launchers, specials) are read once,
   when the game shows the combo as finished.
+- Throws are read once, with their full damage: "throw, 12 percent".
 - Hits that are part of a combo are not read one by one, so the
   readout keeps up. Your own button presses are not read either.
 - F10 turns the damage and combo readout off and on.

@@ -11,7 +11,7 @@
    Everything is also written to MKXAccess.log next to the game exe. */
 #include "win.h"
 
-#define VERSION L"0.5.2"
+#define VERSION L"0.5.3"
 #define FOCUS_DELAY 70   /* ms to wait after focus moves, for descriptions to arrive */
 #define IMAGE_BASE 0x140000000ULL
 
@@ -607,13 +607,20 @@ static void speak(const wchar* s, int interrupt);
    ("player 1, 3 hit combo, 12 percent"). */
 static int g_fightReadout = 1;
 static wchar g_hitDmg[32], g_hitLevel[32]; static int g_hitCell = -1; static DWORD g_hitT; static int g_hitPending;
-typedef struct { wchar hits[16], dmg[32]; DWORD t; int dirty, ended; } Combo;
+typedef struct { wchar hits[16], dmg[32]; DWORD t, start; int dirty, ended; } Combo;
 static Combo g_combo[2];
 static wchar g_seq[256]; static int g_seqN; static DWORD g_seqT;   /* "high, mid, mid" */
 #define HIT_WAIT 900     /* ms: a second hit within this turns the first into a combo (launchers take ~850) */
 #define COMBO_END 700    /* ms without a new hit: hit levels belong to a new string */
 #define COMBO_GIVE_UP 3000  /* ms: read the combo anyway if its Finish animation was missed */
+#define THROW_WAIT 2500  /* ms: a throw's grab lands first, its slam ~1.7 s later */
+static DWORD g_throwT; static int g_throwOn;   /* a throw's grab landed; its damage is still to come */
 
+static int weq_ci(const wchar* a, const char* b)
+{
+    for (; *a && *b; a++, b++) { wchar x = *a, y = (wchar)*b; if (x >= 'a' && x <= 'z') x -= 32; if (y >= 'a' && y <= 'z') y -= 32; if (x != y) return 0; }
+    return !*a && !*b;
+}
 static int cell_index(const wchar* p)
 {
     const wchar* q = p; int n = -1;
@@ -646,6 +653,8 @@ static int fight_text(Entry* e, const wchar* clean, DWORD t)
         if (contains_ci(p, "DamageText")) wcpy(g_hitDmg, clean, 32);
         else if (contains_ci(p, "HitText")) {
             wcpy(g_hitLevel, clean, 32);
+            /* a throw that opens the action (not the last hit of a running combo) */
+            if (weq_ci(clean, "THROW") && !(g_combo[0].dirty && !g_combo[0].ended)) { g_throwOn = 1; g_throwT = t; }
             /* remember the levels of the hits in a row, for the combo summary */
             /* a new string starts after a quiet moment, unless a combo is still going */
             if (t - g_seqT > COMBO_END && !(g_combo[0].dirty && !g_combo[0].ended)) { g_seq[0] = 0; g_seqN = 0; }
@@ -662,8 +671,8 @@ static int fight_text(Entry* e, const wchar* clean, DWORD t)
     if (contains_ci(p, "comboNotifier")) {
         int side = contains_ci(p, "comboNotifierRight") ? 1 : 0;
         Combo* c = &g_combo[side];
-        if (contains_ci(p, "hitsAmount")) { wcpy(c->hits, clean, 16); c->t = t; c->dirty = 1; c->ended = 0; }
-        else if (contains_ci(p, "damageAmount")) { wcpy(c->dmg, clean, 32); c->t = t; c->dirty = 1; }
+        if (contains_ci(p, "hitsAmount")) { if (!c->dirty) c->start = t; wcpy(c->hits, clean, 16); c->t = t; c->dirty = 1; c->ended = 0; }
+        else if (contains_ci(p, "damageAmount")) { if (!c->dirty) c->start = t; wcpy(c->dmg, clean, 32); c->t = t; c->dirty = 1; c->ended = 0; }
         return 1;   /* "Hits" / "Damage" labels are not read either */
     }
     return 0;
@@ -682,8 +691,10 @@ static void fight_tick(DWORD now)
     /* a combo that just grew swallows the hit that started it */
     for (int s = 0; s < 2; s++)
         if (g_hitPending && g_combo[s].dirty && (int)(g_combo[s].t - g_hitT) >= -50) g_hitPending = 0;
-    if (g_hitPending && now - g_hitT >= HIT_WAIT) {
+    int wait = weq_ci(g_hitLevel, "THROW") ? THROW_WAIT : HIT_WAIT;
+    if (g_hitPending && now - g_hitT >= (DWORD)wait) {
         g_hitPending = 0;
+        g_throwOn = 0;   /* a throw with nothing after it (broken, or no slam): read the grab */
         wchar line[96]; line[0] = 0;
         if (g_hitLevel[0]) lower_word(g_hitLevel, line, 96);
         if (g_hitDmg[0]) {
@@ -702,6 +713,16 @@ static void fight_tick(DWORD now)
         int hits = 0; for (int i = 0; c->hits[i] >= '0' && c->hits[i] <= '9'; i++) hits = hits * 10 + (c->hits[i] - '0');
         if (hits < 2) continue;
         wchar line[128];
+        /* the throw came first and the counted hits started within THROW_WAIT of it */
+        int isThrow = s == 0 && g_throwOn && (int)(c->start - g_throwT) >= 0 && (int)(c->start - g_throwT) < THROW_WAIT;
+        g_throwOn = 0;
+        if (isThrow) {   /* grab + slam: "throw, 12 percent" */
+            wcpy(line, (const wchar*)L"throw", 128);
+            if (c->dmg[0]) { wchar pct[48]; say_percent(c->dmg, pct, 48); wcat(line, (const wchar*)L", ", 128); wcat(line, pct, 128); }
+            g_seq[0] = 0; g_seqN = 0;
+            speak(line, 1);
+            continue;
+        }
         wcpy(line, c->hits, 128); wcat(line, (const wchar*)L" hit combo", 128);
         if (c->dmg[0]) { wchar pct[48]; say_percent(c->dmg, pct, 48); wcat(line, (const wchar*)L", ", 128); wcat(line, pct, 128); }
         /* the hit levels, only when they clearly belong to this combo */
