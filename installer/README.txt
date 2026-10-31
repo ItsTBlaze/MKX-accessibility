@@ -1,4 +1,4 @@
-MKX Access 0.6.1 - screen reader support for Mortal Kombat X
+MKX Access 0.7.0 - screen reader support for Mortal Kombat X
 =============================================================
 
 MKX Access makes Mortal Kombat X (Steam, PC) speak through the NVDA
@@ -71,6 +71,16 @@ Inviting friends (private match, private King of the Hill)
   the controller works normally again.
 - If NVDA isn't running, Steam's own window opens as usual.
 
+Accepting invites
+- When a friend invites you to a match while you're in the game, you
+  hear "pdexinthelab invited you to a match. Press Back on the
+  controller, or Control F11, to accept."
+- Press Back (View on newer controllers) or Ctrl+F11 to accept. You
+  hear "Joining pdexinthelab's match" and the game joins, just as if
+  you had accepted in Steam.
+- While an invite is waiting, the Back button only accepts it. An
+  invite you don't answer is dropped after 2 minutes.
+
 The Krypt
 - Tips and messages, such as "Welcome to The Krypt!".
 - Button prompts as they appear: "A, Open Tomb", and prices:
@@ -103,6 +113,7 @@ HOTKEYS (only while the game window is in front)
   F9  say which version of the mod is running
   F10 turn damage numbers on or off (hit levels and combos stay)
   F11 next friend to invite, Shift+F11 previous, Ctrl+F11 send invite
+      (Ctrl+F11 accepts when a friend has invited you)
 
 
 KNOWN LIMITS

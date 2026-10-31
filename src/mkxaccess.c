@@ -10,10 +10,11 @@
      F10 turn damage numbers on or off (hit levels and combo counts stay)
      F11 next Steam friend to invite, Shift+F11 previous, Ctrl+F11 send the invite
          (on the invite screen also D-pad down / up and A on the controller)
+         When a friend invites you: Ctrl+F11 or the controller's Back button accepts
    Everything is also written to MKXAccess.log next to the game exe. */
 #include "win.h"
 
-#define VERSION L"0.6.1"
+#define VERSION L"0.7.0"
 #define FOCUS_DELAY 70   /* ms to wait after focus moves, for descriptions to arrive */
 #define IMAGE_BASE 0x140000000ULL
 
@@ -43,7 +44,7 @@ static gotoLabel_t   o_gotoAndPlay, o_gotoAndStop;
 
 /* ------------------------------------------------------------------ */
 /* event queue: game thread -> worker thread                           */
-enum { EV_TEXT = 1, EV_HTML, EV_VTEXT, EV_VHTML, EV_FOCUS, EV_SETFOCUS, EV_GRID, EV_ANIM, EV_LABEL, EV_COMBOEND, EV_INVITE, EV_PAD };
+enum { EV_TEXT = 1, EV_HTML, EV_VTEXT, EV_VHTML, EV_FOCUS, EV_SETFOCUS, EV_GRID, EV_ANIM, EV_LABEL, EV_COMBOEND, EV_INVITE, EV_PAD, EV_LOBBYINVITE };
 #define PATHMAX 192
 #define TEXTMAX 512
 typedef struct { int type; u64 id; DWORD t; int x, y; wchar path[PATHMAX]; wchar text[TEXTMAX]; } Event;
@@ -225,7 +226,8 @@ static void anim_event(void* self, const char* label)
         }
     }
 }
-static DWORD hk_gotoAndPlay(void* self, const char* label) { anim_event(self, label); return o_gotoAndPlay(self, label); }
+static void steam_register_callbacks(void);
+static DWORD hk_gotoAndPlay(void* self, const char* label) { steam_register_callbacks(); anim_event(self, label); return o_gotoAndPlay(self, label); }
 static DWORD hk_gotoAndStop(void* self, const char* label) { anim_event(self, label); return o_gotoAndStop(self, label); }
 
 /* controller: while the invite screen is up, D-pad down/up and A choose a friend
@@ -236,16 +238,24 @@ typedef struct { DWORD packet; XPad pad; } XState;
 typedef DWORD (WINAPI *XInputGetState_t)(DWORD, XState*);
 static XInputGetState_t o_XInputGetState;
 static volatile int g_padMode;        /* set by the worker while the invite screen is up */
+static volatile int g_acceptMode;     /* set by the worker while a received invite waits */
+static void steam_register_callbacks(void);
 static WORD g_padPrev[4];
 #define PAD_UP 0x0001
 #define PAD_DOWN 0x0002
 #define PAD_A 0x1000
+#define PAD_BACK 0x0020
 static DWORD WINAPI hk_XInputGetState(DWORD idx, XState* st)
 {
     DWORD r = o_XInputGetState(idx, st);
     if (r != 0 || !st || idx >= 4) return r;
+    steam_register_callbacks();   /* game thread: safe place to register with Steam */
     WORD b = st->pad.wButtons, fresh = b & ~g_padPrev[idx];
     g_padPrev[idx] = b;
+    if (g_acceptMode && !g_padMode) {
+        if (fresh & PAD_BACK) { Event* e = q_begin(); if (e) { e->type = EV_PAD; e->x = PAD_BACK; q_end(); } }
+        st->pad.wButtons &= (WORD)~PAD_BACK;
+    }
     if (g_padMode) {
         WORD mine = fresh & (PAD_UP | PAD_DOWN | PAD_A);
         if (mine) { Event* e = q_begin(); if (e) { e->type = EV_PAD; e->x = mine; q_end(); } }
@@ -1301,9 +1311,12 @@ static void steam_invite_requested(Event* ev)
                      : (const wchar*)L"Invite a friend. None of your Steam friends are online right now. Press D-pad down or F11 to check again.", 0);
 }
 
+static void steam_accept_invite(void);
+static u64 g_rxLobby;
 static void steam_invite_key(int shift, int ctrl)
 {
     if (g_inviteHooked != 1) { speak_force((const wchar*)L"Steam invites aren't available"); return; }
+    if (ctrl && g_rxLobby && !g_padMode) { steam_accept_invite(); return; }   /* someone invited us */
     if (ctrl) {
         if (!g_inviteLobby) { speak_force((const wchar*)L"No match to invite to yet. Create a private match first."); return; }
         if (g_friendIdx < 0 || g_friendIdx >= g_nfriends) { speak_force((const wchar*)L"Choose a friend first with F11"); return; }
@@ -1325,6 +1338,80 @@ static void steam_invite_key(int shift, int ctrl)
     if (g_friendIdx < 0) g_friendIdx = shift ? g_nfriends - 1 : 0;
     else g_friendIdx = (g_friendIdx + (shift ? g_nfriends - 1 : 1)) % g_nfriends;
     steam_say_friend();
+}
+
+/* receiving invites: Steam calls back with LobbyInvite_t (503) when a friend
+   invites us. Accepting does what Steam's own accept does: the game's
+   GameLobbyJoinRequested handler only stores the lobby in GLobbyToJoin, and
+   OnlineWin32Platform::DoWork joins it once online. CCallbackBase layout on
+   Windows (matches the game's own CCallback vtables): vtbl[0] Run(param, ioFailure,
+   apiCall), vtbl[1] Run(param), vtbl[2] GetCallbackSizeBytes; flags byte at +8,
+   callback id at +12. Registered from the game thread. */
+#define CB_LOBBY_INVITE 503
+#define GLOBBY_TO_JOIN 0x14331FF90ULL
+typedef struct { u64 user, lobby, game; } LobbyInvite;
+typedef void (*SteamRegCb_t)(void*, int);
+static void cb_got_invite(LobbyInvite* li)
+{
+    if (!li) return;
+    Event* e = q_begin();
+    if (e) { e->type = EV_LOBBYINVITE; e->id = li->lobby; e->x = (int)(DWORD)li->user; e->y = (int)(DWORD)(li->user >> 32);
+             e->text[0] = (wchar)((li->game & 0xFFFFFF) == MKX_APPID); q_end(); }
+}
+static void cb_run3(void* self, void* param, BYTE io, u64 call) { cb_got_invite((LobbyInvite*)param); }
+static void cb_run1(void* self, void* param) { cb_got_invite((LobbyInvite*)param); }
+static int  cb_size(void* self) { return (int)sizeof(LobbyInvite); }
+static void* g_cbVtbl[3] = { (void*)cb_run3, (void*)cb_run1, (void*)cb_size };
+static struct { void** vtbl; BYTE flags; BYTE pad[3]; int iCallback; } g_cbInvite = { g_cbVtbl, 0, {0,0,0}, 0 };
+static volatile int g_cbRegistered;
+
+static void steam_register_callbacks(void)
+{
+    if (g_cbRegistered || g_inviteHooked != 1) return;   /* Steam must be up first */
+    g_cbRegistered = 1;
+    HMODULE sa = GetModuleHandleW((const wchar*)L"steam_api64.dll");
+    SteamRegCb_t reg = sa ? (SteamRegCb_t)GetProcAddress(sa, "SteamAPI_RegisterCallback") : 0;
+    if (reg) { reg(&g_cbInvite, CB_LOBBY_INVITE); g_cbRegistered = 2; }
+}
+
+static u64 g_rxFrom; static DWORD g_rxT; static wchar g_rxName[64];
+#define INVITE_EXPIRES 120000
+
+static void steam_invite_received(Event* ev)
+{
+    u64 from = (u64)(DWORD)ev->x | ((u64)(DWORD)ev->y << 32);
+    wchar num[24]; utoa_w(ev->id, num, 16, 1);
+    logf3((const wchar*)L"INVITE-RECEIVED", num, ev->text[0] ? (const wchar*)L"Mortal Kombat X" : (const wchar*)L"other game");
+    if (!ev->text[0] || !ev->id) return;   /* an invite for another game */
+    g_rxLobby = ev->id; g_rxFrom = from; g_rxT = ev->t;
+    g_rxName[0] = 0;
+    if (g_sFriends) {
+        const char* nm = ((sfGetPersonaName_t)vfn(g_sFriends, 7))(g_sFriends, from);
+        int k = nm ? MultiByteToWideChar(CP_UTF8, 0, nm, -1, g_rxName, 63) : 0;
+        g_rxName[k > 0 ? k - 1 : 0] = 0; g_rxName[63] = 0;
+    }
+    if (!g_rxName[0]) wcpy(g_rxName, (const wchar*)L"A friend", 64);
+    g_acceptMode = g_padHooked;
+    wchar line[200];
+    wcpy(line, g_rxName, 200);
+    wcat(line, (const wchar*)L" invited you to a match. Press Back on the controller, or Control F11, to accept.", 200);
+    speak_force(line);
+}
+
+static void steam_accept_invite(void)
+{
+    if (!g_rxLobby) { speak_force((const wchar*)L"No invite to accept"); return; }
+    *(volatile u64*)(g_base + (GLOBBY_TO_JOIN - IMAGE_BASE)) = g_rxLobby;   /* the game joins it */
+    wchar line[160];
+    wcpy(line, (const wchar*)L"Joining ", 160); wcat(line, g_rxName, 160); wcat(line, (const wchar*)L"'s match", 160);
+    logf3((const wchar*)L"INVITE-ACCEPTED", g_rxName, 0);
+    speak_force(line);
+    g_rxLobby = 0; g_acceptMode = 0;
+}
+
+static void steam_invite_tick(DWORD now)
+{
+    if (g_rxLobby && now - g_rxT > INVITE_EXPIRES) { g_rxLobby = 0; g_acceptMode = 0; log_w((const wchar*)L"INVITE-RECEIVED expired"); }
 }
 
 /* ------------------------------------------------------------------ */
@@ -1412,6 +1499,8 @@ static DWORD WINAPI worker(void* arg)
             else if (ev.type == EV_LABEL) logf3((const wchar*)L"ANIM", ev.path[0] ? ev.path : (const wchar*)L"?", ev.text);
             else if (ev.type == EV_COMBOEND) combo_finished(&ev);
             else if (ev.type == EV_INVITE) steam_invite_requested(&ev);
+            else if (ev.type == EV_LOBBYINVITE) steam_invite_received(&ev);
+            else if (ev.type == EV_PAD && (ev.x & PAD_BACK)) steam_accept_invite();
             else if (ev.type == EV_PAD) {
                 if (ev.x & PAD_DOWN) steam_invite_key(0, 0);
                 if (ev.x & PAD_UP) steam_invite_key(1, 0);
@@ -1433,6 +1522,8 @@ static DWORD WINAPI worker(void* arg)
         }
         speech_tick(now);
         if (!g_inviteHooked && now - lastSteamTry > 1000) { steam_try_hook(); lastSteamTry = now; }
+        steam_invite_tick(now);
+        if (g_cbRegistered == 2) { log_w((const wchar*)L"STEAM listening for invites (LobbyInvite_t)"); g_cbRegistered = 3; }
         poll_keys();
         if (now - lastFlush > 2000) { if (g_log != INVALID_HANDLE_VALUE) FlushFileBuffers(g_log); lastFlush = now; }
         if (now - lastStats > 60000) {
