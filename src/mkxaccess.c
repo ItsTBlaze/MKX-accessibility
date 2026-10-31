@@ -7,11 +7,11 @@
      F7  toggle auto-reading of new text that is not tied to focus
      F8  mute / unmute MKX Access
      F9  say which version of MKX Access is running
-     F10 turn the damage and combo readout on or off
+     F10 turn damage numbers on or off (hit levels and combo counts stay)
    Everything is also written to MKXAccess.log next to the game exe. */
 #include "win.h"
 
-#define VERSION L"0.5.3"
+#define VERSION L"0.5.4"
 #define FOCUS_DELAY 70   /* ms to wait after focus moves, for descriptions to arrive */
 #define IMAGE_BASE 0x140000000ULL
 
@@ -605,7 +605,7 @@ static void speak(const wchar* s, int interrupt);
    A single hit is read after a short wait ("mid, 7 percent"). Hits that turn
    into a combo are not read one by one; the combo is read once it ends
    ("player 1, 3 hit combo, 12 percent"). */
-static int g_fightReadout = 1;
+static int g_damageNumbers = 1;   /* F10: say the percentages (hit levels and combo counts always) */
 static wchar g_hitDmg[32], g_hitLevel[32]; static int g_hitCell = -1; static DWORD g_hitT; static int g_hitPending;
 typedef struct { wchar hits[16], dmg[32]; DWORD t, start; int dirty, ended; } Combo;
 static Combo g_combo[2];
@@ -687,7 +687,6 @@ static void combo_finished(Event* ev)
 
 static void fight_tick(DWORD now)
 {
-    if (!g_fightReadout) { g_hitPending = 0; g_combo[0].dirty = g_combo[1].dirty = 0; return; }
     /* a combo that just grew swallows the hit that started it */
     for (int s = 0; s < 2; s++)
         if (g_hitPending && g_combo[s].dirty && (int)(g_combo[s].t - g_hitT) >= -50) g_hitPending = 0;
@@ -697,7 +696,7 @@ static void fight_tick(DWORD now)
         g_throwOn = 0;   /* a throw with nothing after it (broken, or no slam): read the grab */
         wchar line[96]; line[0] = 0;
         if (g_hitLevel[0]) lower_word(g_hitLevel, line, 96);
-        if (g_hitDmg[0]) {
+        if (g_hitDmg[0] && (g_damageNumbers || !line[0])) {
             wchar pct[48]; say_percent(g_hitDmg, pct, 48);
             if (line[0]) wcat(line, (const wchar*)L", ", 96);
             wcat(line, pct, 96);
@@ -718,13 +717,13 @@ static void fight_tick(DWORD now)
         g_throwOn = 0;
         if (isThrow) {   /* grab + slam: "throw, 12 percent" */
             wcpy(line, (const wchar*)L"throw", 128);
-            if (c->dmg[0]) { wchar pct[48]; say_percent(c->dmg, pct, 48); wcat(line, (const wchar*)L", ", 128); wcat(line, pct, 128); }
+            if (c->dmg[0] && g_damageNumbers) { wchar pct[48]; say_percent(c->dmg, pct, 48); wcat(line, (const wchar*)L", ", 128); wcat(line, pct, 128); }
             g_seq[0] = 0; g_seqN = 0;
             speak(line, 1);
             continue;
         }
         wcpy(line, c->hits, 128); wcat(line, (const wchar*)L" hit combo", 128);
-        if (c->dmg[0]) { wchar pct[48]; say_percent(c->dmg, pct, 48); wcat(line, (const wchar*)L", ", 128); wcat(line, pct, 128); }
+        if (c->dmg[0] && g_damageNumbers) { wchar pct[48]; say_percent(c->dmg, pct, 48); wcat(line, (const wchar*)L", ", 128); wcat(line, pct, 128); }
         /* the hit levels, only when they clearly belong to this combo */
         static wchar full[400];
         wcpy(full, line, 400);
@@ -1128,7 +1127,7 @@ static void poll_keys(void)
     int front = game_in_front();
     int f5 = pressed(0x74), f6 = pressed(0x75), f7 = pressed(0x76), f8 = pressed(0x77), f9 = pressed(0x78), f10 = pressed(0x79);
     if (!front) return;
-    if (f10) { g_fightReadout = !g_fightReadout; speak_force(g_fightReadout ? (const wchar*)L"Damage readout on" : (const wchar*)L"Damage readout off"); }
+    if (f10) { g_damageNumbers = !g_damageNumbers; speak_force(g_damageNumbers ? (const wchar*)L"Damage numbers on" : (const wchar*)L"Damage numbers off"); }
     if (f9) speak_force((const wchar*)(L"MKX Access version " VERSION));
     if (f5) { static wchar again[2048]; wcpy(again, g_last[0] ? g_last : (const wchar*)L"Nothing yet", 2048); speak(again, 1); }
     if (f6) read_screen();
