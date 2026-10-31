@@ -11,7 +11,7 @@
    Everything is also written to MKXAccess.log next to the game exe. */
 #include "win.h"
 
-#define VERSION L"0.5.1"
+#define VERSION L"0.5.2"
 #define FOCUS_DELAY 70   /* ms to wait after focus moves, for descriptions to arrive */
 #define IMAGE_BASE 0x140000000ULL
 
@@ -610,7 +610,7 @@ static wchar g_hitDmg[32], g_hitLevel[32]; static int g_hitCell = -1; static DWO
 typedef struct { wchar hits[16], dmg[32]; DWORD t; int dirty, ended; } Combo;
 static Combo g_combo[2];
 static wchar g_seq[256]; static int g_seqN; static DWORD g_seqT;   /* "high, mid, mid" */
-#define HIT_WAIT 500     /* ms: a second hit within this turns the first into a combo */
+#define HIT_WAIT 900     /* ms: a second hit within this turns the first into a combo (launchers take ~850) */
 #define COMBO_END 700    /* ms without a new hit: hit levels belong to a new string */
 #define COMBO_GIVE_UP 3000  /* ms: read the combo anyway if its Finish animation was missed */
 
