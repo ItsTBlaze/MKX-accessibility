@@ -8,10 +8,11 @@
      F8  mute / unmute MKX Access
      F9  say which version of MKX Access is running
      F10 turn damage numbers on or off (hit levels and combo counts stay)
+     F11 next Steam friend to invite, Shift+F11 previous, Ctrl+F11 send the invite
    Everything is also written to MKXAccess.log next to the game exe. */
 #include "win.h"
 
-#define VERSION L"0.5.4"
+#define VERSION L"0.6.0"
 #define FOCUS_DELAY 70   /* ms to wait after focus moves, for descriptions to arrive */
 #define IMAGE_BASE 0x140000000ULL
 
@@ -41,7 +42,7 @@ static gotoLabel_t   o_gotoAndPlay, o_gotoAndStop;
 
 /* ------------------------------------------------------------------ */
 /* event queue: game thread -> worker thread                           */
-enum { EV_TEXT = 1, EV_HTML, EV_VTEXT, EV_VHTML, EV_FOCUS, EV_SETFOCUS, EV_GRID, EV_ANIM, EV_LABEL, EV_COMBOEND };
+enum { EV_TEXT = 1, EV_HTML, EV_VTEXT, EV_VHTML, EV_FOCUS, EV_SETFOCUS, EV_GRID, EV_ANIM, EV_LABEL, EV_COMBOEND, EV_INVITE };
 #define PATHMAX 192
 #define TEXTMAX 512
 typedef struct { int type; u64 id; DWORD t; int x, y; wchar path[PATHMAX]; wchar text[TEXTMAX]; } Event;
@@ -1107,6 +1108,161 @@ static void handle_focus(Event* ev)
 }
 
 /* ------------------------------------------------------------------ */
+/* accessible Steam invites                                            */
+/* Private matches and private King of the Hill open Steam's overlay invite
+   window through ISteamFriends::ActivateGameOverlayInviteDialog(lobby). That
+   window is drawn by Steam's overlay and has no text the mod or NVDA can read.
+   We patch that one slot of the ISteamFriends vtable: the lobby ID is kept, the
+   overlay is not opened (unless NVDA isn't running), and F11 / Shift+F11 /
+   Ctrl+F11 pick a friend and send the invite with
+   ISteamMatchmaking::InviteUserToLobby. The friend gets a normal Steam invite.
+
+   Interface versions in this game's steam_api64.dll: SteamFriends014 and
+   SteamMatchMaking009. vtable slots, confirmed against the game's own calls:
+     Friends:     3 GetFriendCount(flags)  4 GetFriendByIndex(ret*, i, flags)
+                  6 GetFriendPersonaState(id)  7 GetFriendPersonaName(id)
+                  8 GetFriendGamePlayed(id, FriendGameInfo_t*)
+                  27 ActivateGameOverlayInviteDialog(lobby)
+     Matchmaking: 16 InviteUserToLobby(lobby, invitee)  17 GetNumLobbyMembers(lobby) */
+#define MKX_APPID 307780
+#define FRIEND_FLAG_IMMEDIATE 4
+typedef int   (*sfGetFriendCount_t)(void*, int);
+typedef u64*  (*sfGetFriendByIndex_t)(void*, u64*, int, int);
+typedef int   (*sfGetPersonaState_t)(void*, u64);
+typedef const char* (*sfGetPersonaName_t)(void*, u64);
+typedef BYTE  (*sfGetGamePlayed_t)(void*, u64, void*);
+typedef void  (*sfInviteDialog_t)(void*, u64);
+typedef BYTE  (*smInviteUser_t)(void*, u64, u64);
+typedef int   (*smNumMembers_t)(void*, u64);
+typedef void* (*SteamIface_t)(void);
+
+static void* g_sFriends; static void* g_sMatch;
+static sfInviteDialog_t o_inviteDialog;
+static volatile u64 g_inviteLobby;
+static int g_inviteHooked, g_nvOk;
+typedef struct { u64 id; wchar name[64]; int playing, state; } Friend;
+static Friend g_friends[200]; static int g_nfriends, g_friendIdx = -1;
+
+static void* vfn(void* iface, int slot) { return (*(void***)iface)[slot]; }
+
+static void hk_inviteDialog(void* self, u64 lobby)
+{
+    g_inviteLobby = lobby;
+    Event* e = q_begin();
+    if (e) { e->type = EV_INVITE; e->id = lobby; q_end(); }
+    if (!g_nvOk && nv_test) g_nvOk = nv_test() == 0;                 /* NVDA may have started after the game */
+    if (!g_nvOk && o_inviteDialog) o_inviteDialog(self, lobby);   /* no NVDA: keep Steam's own window */
+}
+
+/* patch the vtable slot once Steam is up (the game starts Steam after we load) */
+static void steam_try_hook(void)
+{
+    if (g_inviteHooked) return;
+    HMODULE sa = GetModuleHandleW((const wchar*)L"steam_api64.dll");
+    if (!sa) return;
+    SteamIface_t friendsFn = (SteamIface_t)GetProcAddress(sa, "SteamFriends");
+    SteamIface_t matchFn = (SteamIface_t)GetProcAddress(sa, "SteamMatchmaking");
+    if (!friendsFn || !matchFn) { g_inviteHooked = -1; return; }
+    void* f = friendsFn(); void* m = matchFn();
+    if (!f || !m || !readable(f, 8) || !readable(*(void**)f, 32 * 8)) return;   /* Steam not started yet */
+    g_sFriends = f; g_sMatch = m;
+    void** slot = &(*(void***)f)[27];
+    DWORD old;
+    if (!VirtualProtect(slot, 8, 0x04, &old)) { g_inviteHooked = -1; return; }
+    o_inviteDialog = (sfInviteDialog_t)*slot;
+    *slot = (void*)hk_inviteDialog;
+    VirtualProtect(slot, 8, old, &old);
+    g_inviteHooked = 1;
+    log_w((const wchar*)L"STEAM invite window replaced (SteamFriends slot 27)");
+}
+
+static const wchar* state_word(int st)
+{
+    switch (st) {
+    case 1: return (const wchar*)L"online";  case 2: return (const wchar*)L"busy";
+    case 3: return (const wchar*)L"away";    case 4: return (const wchar*)L"snooze";
+    case 5: return (const wchar*)L"looking to trade"; case 6: return (const wchar*)L"looking to play";
+    default: return (const wchar*)L"offline";
+    }
+}
+
+/* online friends, those playing Mortal Kombat X first */
+static void steam_load_friends(void)
+{
+    g_nfriends = 0; g_friendIdx = -1;
+    if (!g_sFriends) return;
+    int n = ((sfGetFriendCount_t)vfn(g_sFriends, 3))(g_sFriends, FRIEND_FLAG_IMMEDIATE);
+    for (int pass = 0; pass < 2; pass++)
+        for (int i = 0; i < n && g_nfriends < 200; i++) {
+            u64 id = 0;
+            ((sfGetFriendByIndex_t)vfn(g_sFriends, 4))(g_sFriends, &id, i, FRIEND_FLAG_IMMEDIATE);
+            if (!id) continue;
+            int st = ((sfGetPersonaState_t)vfn(g_sFriends, 6))(g_sFriends, id);
+            if (st == 0) continue;   /* offline friends can't join */
+            struct { u64 game; DWORD ip; WORD port, qport; u64 lobby; } gi;
+            memset(&gi, 0, sizeof(gi));
+            int playing = ((sfGetGamePlayed_t)vfn(g_sFriends, 8))(g_sFriends, id, &gi) && (gi.game & 0xFFFFFF) == MKX_APPID;
+            if (playing != (pass == 0)) continue;
+            Friend* fr = &g_friends[g_nfriends++];
+            fr->id = id; fr->playing = playing; fr->state = st;
+            const char* nm = ((sfGetPersonaName_t)vfn(g_sFriends, 7))(g_sFriends, id);
+            int k = nm ? MultiByteToWideChar(CP_UTF8, 0, nm, -1, fr->name, 63) : 0;
+            fr->name[k > 0 ? k - 1 : 0] = 0; fr->name[63] = 0;
+            if (!fr->name[0]) wcpy(fr->name, (const wchar*)L"unknown name", 64);
+        }
+}
+
+static void steam_say_friend(void)
+{
+    if (!g_nfriends) { speak_force((const wchar*)L"None of your Steam friends are online"); return; }
+    Friend* fr = &g_friends[g_friendIdx];
+    wchar line[160], num[12];
+    wcpy(line, fr->name, 160);
+    wcat(line, fr->playing ? (const wchar*)L", playing Mortal Kombat X" : (const wchar*)L", ", 160);
+    if (!fr->playing) wcat(line, state_word(fr->state), 160);
+    wcat(line, (const wchar*)L", ", 160); utoa_w(g_friendIdx + 1, num, 10, 1); wcat(line, num, 160);
+    wcat(line, (const wchar*)L" of ", 160); utoa_w(g_nfriends, num, 10, 1); wcat(line, num, 160);
+    speak_force(line);
+}
+
+static void steam_invite_requested(Event* ev)
+{
+    wchar num[24]; utoa_w(ev->id, num, 16, 1);
+    logf3((const wchar*)L"INVITE-WINDOW", num, 0);
+    steam_load_friends();
+    logf3((const wchar*)L"STEAM friends online", 0, 0);
+    /* queued, so the game's own "INVITE PLAYERS" / "WAITING FOR OPPONENT" isn't cut off */
+    speak(g_nfriends ? (const wchar*)L"Invite a friend. F11 for the next friend, Shift F11 for the previous one, Control F11 to send the invite."
+                     : (const wchar*)L"Invite a friend. None of your Steam friends are online right now. Press F11 to check again.", 0);
+}
+
+static void steam_invite_key(int shift, int ctrl)
+{
+    if (g_inviteHooked != 1) { speak_force((const wchar*)L"Steam invites aren't available"); return; }
+    if (ctrl) {
+        if (!g_inviteLobby) { speak_force((const wchar*)L"No match to invite to yet. Create a private match first."); return; }
+        if (g_friendIdx < 0 || g_friendIdx >= g_nfriends) { speak_force((const wchar*)L"Choose a friend first with F11"); return; }
+        if (g_sMatch && ((smNumMembers_t)vfn(g_sMatch, 17))(g_sMatch, g_inviteLobby) <= 0) {
+            speak_force((const wchar*)L"That match is no longer open. Create a new private match, then try again.");
+            return;
+        }
+        Friend* fr = &g_friends[g_friendIdx];
+        BYTE ok = g_sMatch ? ((smInviteUser_t)vfn(g_sMatch, 16))(g_sMatch, g_inviteLobby, fr->id) : 0;
+        wchar line[128];
+        wcpy(line, ok ? (const wchar*)L"Invite sent to " : (const wchar*)L"Could not send the invite to ", 128);
+        wcat(line, fr->name, 128);
+        logf3((const wchar*)L"INVITE", fr->name, ok ? (const wchar*)L"sent" : (const wchar*)L"failed");
+        speak_force(line);
+        return;
+    }
+    if (!g_nfriends || g_friendIdx < 0) steam_load_friends();   /* first press: fresh list */
+    if (!g_nfriends) { steam_say_friend(); return; }
+    if (g_friendIdx < 0) g_friendIdx = shift ? g_nfriends - 1 : 0;
+    else g_friendIdx = (g_friendIdx + (shift ? g_nfriends - 1 : 1)) % g_nfriends;
+    steam_say_friend();
+}
+
+/* ------------------------------------------------------------------ */
 /* hotkeys                                                             */
 static int game_in_front(void)
 {
@@ -1125,8 +1281,9 @@ static int pressed(int vk)
 static void poll_keys(void)
 {
     int front = game_in_front();
-    int f5 = pressed(0x74), f6 = pressed(0x75), f7 = pressed(0x76), f8 = pressed(0x77), f9 = pressed(0x78), f10 = pressed(0x79);
+    int f5 = pressed(0x74), f6 = pressed(0x75), f7 = pressed(0x76), f8 = pressed(0x77), f9 = pressed(0x78), f10 = pressed(0x79), f11 = pressed(0x7A);
     if (!front) return;
+    if (f11) steam_invite_key((GetAsyncKeyState(0x10) & 0x8000) != 0, (GetAsyncKeyState(0x11) & 0x8000) != 0);
     if (f10) { g_damageNumbers = !g_damageNumbers; speak_force(g_damageNumbers ? (const wchar*)L"Damage numbers on" : (const wchar*)L"Damage numbers off"); }
     if (f9) speak_force((const wchar*)(L"MKX Access version " VERSION));
     if (f5) { static wchar again[2048]; wcpy(again, g_last[0] ? g_last : (const wchar*)L"Nothing yet", 2048); speak(again, 1); }
@@ -1166,7 +1323,8 @@ static DWORD WINAPI worker(void* arg)
         nv_speak = (nvSpeak_t)GetProcAddress(nv, "nvdaController_speakText");
         nv_cancel = (nvVoid_t)GetProcAddress(nv, "nvdaController_cancelSpeech");
         nv_test = (nvVoid_t)GetProcAddress(nv, "nvdaController_testIfRunning");
-        log_w(nv_test && nv_test() == 0 ? (const wchar*)L"NVDA is running" : (const wchar*)L"NVDA not detected yet");
+        g_nvOk = nv_test && nv_test() == 0;
+        log_w(g_nvOk ? (const wchar*)L"NVDA is running" : (const wchar*)L"NVDA not detected yet");
     } else log_w((const wchar*)L"nvdaControllerClient64.dll not found - speech disabled, logging only");
 
     int okCount = 0; for (int i = 0; i < NHOOKS; i++) if (g_hookOk[i] == 1) okCount++;
@@ -1175,7 +1333,7 @@ static DWORD WINAPI worker(void* arg)
                           (const wchar*)(L"MKX Access " VERSION L" could not hook this game version");
     int announced = 0, frontSince = 0; DWORD frontT = 0;
 
-    DWORD lastFlush = GetTickCount(), lastStats = GetTickCount();
+    DWORD lastFlush = GetTickCount(), lastStats = GetTickCount(), lastSteamTry = 0;
     for (;;) {
         WaitForSingleObject(g_qevent, 25);
         for (;;) {
@@ -1187,6 +1345,7 @@ static DWORD WINAPI worker(void* arg)
             if (ev.type <= EV_VHTML) handle_text(&ev);
             else if (ev.type == EV_LABEL) logf3((const wchar*)L"ANIM", ev.path[0] ? ev.path : (const wchar*)L"?", ev.text);
             else if (ev.type == EV_COMBOEND) combo_finished(&ev);
+            else if (ev.type == EV_INVITE) steam_invite_requested(&ev);
             else handle_focus(&ev);
         }
         DWORD now = GetTickCount();
@@ -1202,6 +1361,7 @@ static DWORD WINAPI worker(void* arg)
             }
         }
         speech_tick(now);
+        if (!g_inviteHooked && now - lastSteamTry > 1000) { steam_try_hook(); lastSteamTry = now; }
         poll_keys();
         if (now - lastFlush > 2000) { if (g_log != INVALID_HANDLE_VALUE) FlushFileBuffers(g_log); lastFlush = now; }
         if (now - lastStats > 60000) {

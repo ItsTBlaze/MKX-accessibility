@@ -1,4 +1,4 @@
-MKX Access 0.5.4 - screen reader support for Mortal Kombat X
+MKX Access 0.6.0 - screen reader support for Mortal Kombat X
 =============================================================
 
 MKX Access makes Mortal Kombat X (Steam, PC) speak through the NVDA
@@ -56,6 +56,17 @@ Online
   "WAITING FOR OPPONENT", "MATCH FOUND".
 - Your opponent's name, ping, and the accept and decline buttons.
 
+Inviting friends (private match, private King of the Hill)
+- Steam's invite window can't be read, so the mod replaces it. When
+  the game would open it, you hear "Invite a friend" instead.
+- F11 goes to the next online Steam friend, Shift+F11 to the
+  previous one. Friends already playing Mortal Kombat X come first:
+  "TheOneLad, playing Mortal Kombat X, 1 of 3", "Hankiro, online,
+  2 of 3".
+- Ctrl+F11 sends the invite: "Invite sent to Hankiro". Your friend
+  gets a normal Steam game invite.
+- If NVDA isn't running, Steam's own window opens as usual.
+
 The Krypt
 - Tips and messages, such as "Welcome to The Krypt!".
 - Button prompts as they appear: "A, Open Tomb", and prices:
@@ -87,13 +98,11 @@ HOTKEYS (only while the game window is in front)
   F8  mute or unmute the mod
   F9  say which version of the mod is running
   F10 turn damage numbers on or off (hit levels and combos stay)
+  F11 next friend to invite, Shift+F11 previous, Ctrl+F11 send invite
 
 
 KNOWN LIMITS
-- Inviting a friend to a private match happens in Steam's overlay,
-  which the mod can't read. Instead, your friend can open Steam's
-  friends list and choose Join game on your name, or you can choose
-  Invite to game on theirs.
+- Only online friends are listed, since offline friends can't join.
 - Fights are not narrated beyond damage and combos. The game's own
   sounds still tell you most of what is happening.
 - Steam version only. On a different version, the mod says "could not
