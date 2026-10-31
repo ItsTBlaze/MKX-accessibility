@@ -34,7 +34,7 @@ int main(int argc,char**argv){
   FILE* f=fopen(argv[1],"r"); char line[8192]; static Event ev;
   while(fgets(line,sizeof line,f)){
     unsigned t; char type[16]; if(sscanf(line,"%u %15s",&t,type)!=2) continue;
-    int et=0; if(!strcmp(type,"TEXT"))et=EV_TEXT; else if(!strcmp(type,"HTML"))et=EV_HTML; else if(!strcmp(type,"FOCUS"))et=EV_FOCUS; else if(!strcmp(type,"GRID"))et=EV_GRID; else if(!strcmp(type,"ANIMFOCUS"))et=EV_ANIM; else if(!strcmp(type,"ANIMFOCUS"))et=EV_ANIM; else continue;
+    int et=0; if(!strcmp(type,"TEXT"))et=EV_TEXT; else if(!strcmp(type,"HTML"))et=EV_HTML; else if(!strcmp(type,"FOCUS"))et=EV_FOCUS; else if(!strcmp(type,"GRID"))et=EV_GRID; else if(!strcmp(type,"ANIMFOCUS"))et=EV_ANIM; else if(!strcmp(type,"COMBO-END"))et=EV_COMBOEND; else continue;
     while(g_clock+25<=t){g_clock+=25;tick();}
     g_clock=t;
     memset(&ev,0,sizeof ev); ev.type=et; ev.t=t;
@@ -43,7 +43,7 @@ int main(int argc,char**argv){
     if(strcmp(path,"?")) for(int i=0;path[i]&&i<PATHMAX-1;i++) ev.path[i]=(unsigned char)path[i];
     if(et<=EV_HTML) for(int i=0;txt[i]&&i<TEXTMAX-1;i++) ev.text[i]=(unsigned char)txt[i];
     if(et==EV_GRID){ sscanf(txt,"x=%d y=%d",&ev.x,&ev.y); }
-    if(et<=EV_VHTML) handle_text(&ev); else handle_focus(&ev);
+    if(et<=EV_VHTML) handle_text(&ev); else if(et==EV_COMBOEND) combo_finished(&ev); else handle_focus(&ev);
   }
   for(int i=0;i<40;i++){g_clock+=25;tick();}
 }

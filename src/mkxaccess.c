@@ -11,7 +11,7 @@
    Everything is also written to MKXAccess.log next to the game exe. */
 #include "win.h"
 
-#define VERSION L"0.5.0"
+#define VERSION L"0.5.1"
 #define FOCUS_DELAY 70   /* ms to wait after focus moves, for descriptions to arrive */
 #define IMAGE_BASE 0x140000000ULL
 
@@ -41,7 +41,7 @@ static gotoLabel_t   o_gotoAndPlay, o_gotoAndStop;
 
 /* ------------------------------------------------------------------ */
 /* event queue: game thread -> worker thread                           */
-enum { EV_TEXT = 1, EV_HTML, EV_VTEXT, EV_VHTML, EV_FOCUS, EV_SETFOCUS, EV_GRID, EV_ANIM, EV_LABEL };
+enum { EV_TEXT = 1, EV_HTML, EV_VTEXT, EV_VHTML, EV_FOCUS, EV_SETFOCUS, EV_GRID, EV_ANIM, EV_LABEL, EV_COMBOEND };
 #define PATHMAX 192
 #define TEXTMAX 512
 typedef struct { int type; u64 id; DWORD t; int x, y; wchar path[PATHMAX]; wchar text[TEXTMAX]; } Event;
@@ -200,6 +200,11 @@ static const char* g_seenLabels[512];
 static void anim_event(void* self, const char* label)
 {
     if (!label || !readable(label, 1)) return;
+    /* the combo counter plays "Finish" when a combo is really over */
+    if (label[0] == 'F' && label[1] == 'i' && label[2] == 'n' && label[3] == 'i' && label[4] == 's' && label[5] == 'h' && !label[6]) {
+        Event* e = q_begin();
+        if (e) { e->type = EV_COMBOEND; e->id = (u64)self; path_of(self, e->path); q_end(); }
+    }
     if (is_focus_label(label)) {
         Event* e = q_begin();
         if (e) { e->type = EV_ANIM; e->id = (u64)self; path_of(self, e->path); q_end(); }
@@ -602,11 +607,12 @@ static void speak(const wchar* s, int interrupt);
    ("player 1, 3 hit combo, 12 percent"). */
 static int g_fightReadout = 1;
 static wchar g_hitDmg[32], g_hitLevel[32]; static int g_hitCell = -1; static DWORD g_hitT; static int g_hitPending;
-typedef struct { wchar hits[16], dmg[32]; DWORD t; int dirty; } Combo;
+typedef struct { wchar hits[16], dmg[32]; DWORD t; int dirty, ended; } Combo;
 static Combo g_combo[2];
 static wchar g_seq[256]; static int g_seqN; static DWORD g_seqT;   /* "high, mid, mid" */
 #define HIT_WAIT 500     /* ms: a second hit within this turns the first into a combo */
-#define COMBO_END 700    /* ms without a new hit: the combo is over */
+#define COMBO_END 700    /* ms without a new hit: hit levels belong to a new string */
+#define COMBO_GIVE_UP 3000  /* ms: read the combo anyway if its Finish animation was missed */
 
 static int cell_index(const wchar* p)
 {
@@ -641,7 +647,8 @@ static int fight_text(Entry* e, const wchar* clean, DWORD t)
         else if (contains_ci(p, "HitText")) {
             wcpy(g_hitLevel, clean, 32);
             /* remember the levels of the hits in a row, for the combo summary */
-            if (t - g_seqT > COMBO_END) { g_seq[0] = 0; g_seqN = 0; }
+            /* a new string starts after a quiet moment, unless a combo is still going */
+            if (t - g_seqT > COMBO_END && !(g_combo[0].dirty && !g_combo[0].ended)) { g_seq[0] = 0; g_seqN = 0; }
             if (clean[0]) {
                 wchar lw[32]; lower_word(clean, lw, 32);
                 if (g_seq[0]) wcat(g_seq, (const wchar*)L", ", 256);
@@ -655,12 +662,20 @@ static int fight_text(Entry* e, const wchar* clean, DWORD t)
     if (contains_ci(p, "comboNotifier")) {
         int side = contains_ci(p, "comboNotifierRight") ? 1 : 0;
         Combo* c = &g_combo[side];
-        if (contains_ci(p, "hitsAmount")) { wcpy(c->hits, clean, 16); c->t = t; c->dirty = 1; }
+        if (contains_ci(p, "hitsAmount")) { wcpy(c->hits, clean, 16); c->t = t; c->dirty = 1; c->ended = 0; }
         else if (contains_ci(p, "damageAmount")) { wcpy(c->dmg, clean, 32); c->t = t; c->dirty = 1; }
         return 1;   /* "Hits" / "Damage" labels are not read either */
     }
     return 0;
 }
+static void combo_finished(Event* ev)
+{
+    if (!contains_ci(ev->path, "comboNotifier")) return;
+    logf3((const wchar*)L"COMBO-END", ev->path, 0);
+    Combo* c = &g_combo[contains_ci(ev->path, "comboNotifierRight") ? 1 : 0];
+    if (c->dirty) c->ended = 1;
+}
+
 static void fight_tick(DWORD now)
 {
     if (!g_fightReadout) { g_hitPending = 0; g_combo[0].dirty = g_combo[1].dirty = 0; return; }
@@ -680,18 +695,20 @@ static void fight_tick(DWORD now)
     }
     for (int s = 0; s < 2; s++) {
         Combo* c = &g_combo[s];
-        if (!c->dirty || now - c->t < COMBO_END) continue;
-        c->dirty = 0;
+        /* wait for the counter's Finish animation: combos can pause for a second
+           mid-string (launchers, specials) and a timer alone cut them in half */
+        if (!c->dirty || !(c->ended || now - c->t >= COMBO_GIVE_UP)) continue;
+        c->dirty = 0; c->ended = 0;
         int hits = 0; for (int i = 0; c->hits[i] >= '0' && c->hits[i] <= '9'; i++) hits = hits * 10 + (c->hits[i] - '0');
         if (hits < 2) continue;
         wchar line[128];
-        wcpy(line, s == 0 ? (const wchar*)L"player 1, " : (const wchar*)L"player 2, ", 128);
-        wcat(line, c->hits, 128); wcat(line, (const wchar*)L" hit combo", 128);
+        wcpy(line, c->hits, 128); wcat(line, (const wchar*)L" hit combo", 128);
         if (c->dmg[0]) { wchar pct[48]; say_percent(c->dmg, pct, 48); wcat(line, (const wchar*)L", ", 128); wcat(line, pct, 128); }
         /* the hit levels, only when they clearly belong to this combo */
         static wchar full[400];
         wcpy(full, line, 400);
-        if (g_seqN == hits && (int)(c->t - g_seqT) >= -100 && (int)(c->t - g_seqT) <= 100) { wcat(full, (const wchar*)L", ", 400); wcat(full, g_seq, 400); }
+        if (s == 0 && g_seqN == hits && (int)(c->t - g_seqT) >= -100 && (int)(c->t - g_seqT) <= 100) { wcat(full, (const wchar*)L", ", 400); wcat(full, g_seq, 400); }
+        if (s == 0) { g_seq[0] = 0; g_seqN = 0; }   /* this string is done */
         speak(full, 1);
     }
 }
@@ -1149,6 +1166,7 @@ static DWORD WINAPI worker(void* arg)
             if (!have) break;
             if (ev.type <= EV_VHTML) handle_text(&ev);
             else if (ev.type == EV_LABEL) logf3((const wchar*)L"ANIM", ev.path[0] ? ev.path : (const wchar*)L"?", ev.text);
+            else if (ev.type == EV_COMBOEND) combo_finished(&ev);
             else handle_focus(&ev);
         }
         DWORD now = GetTickCount();
