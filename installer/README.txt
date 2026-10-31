@@ -1,4 +1,4 @@
-MKX Access 0.6.0 - screen reader support for Mortal Kombat X
+MKX Access 0.6.1 - screen reader support for Mortal Kombat X
 =============================================================
 
 MKX Access makes Mortal Kombat X (Steam, PC) speak through the NVDA
@@ -59,12 +59,16 @@ Online
 Inviting friends (private match, private King of the Hill)
 - Steam's invite window can't be read, so the mod replaces it. When
   the game would open it, you hear "Invite a friend" instead.
-- F11 goes to the next online Steam friend, Shift+F11 to the
-  previous one. Friends already playing Mortal Kombat X come first:
-  "TheOneLad, playing Mortal Kombat X, 1 of 3", "Hankiro, online,
-  2 of 3".
-- Ctrl+F11 sends the invite: "Invite sent to Hankiro". Your friend
-  gets a normal Steam game invite.
+- D-pad down or F11 goes to the next online Steam friend, D-pad up
+  or Shift+F11 to the previous one. Friends already playing Mortal
+  Kombat X come first: "TheOneLad, playing Mortal Kombat X, 1 of 3",
+  "Hankiro, online, 2 of 3".
+- A or Ctrl+F11 sends the invite: "Invite sent to Hankiro". Your
+  friend gets a normal Steam game invite.
+- While the invite screen is up, D-pad up, D-pad down and A only
+  control the friend list, so they can't press anything in the game.
+  B still works as normal to cancel. Once you leave the invite screen
+  the controller works normally again.
 - If NVDA isn't running, Steam's own window opens as usual.
 
 The Krypt

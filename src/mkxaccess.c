@@ -9,10 +9,11 @@
      F9  say which version of MKX Access is running
      F10 turn damage numbers on or off (hit levels and combo counts stay)
      F11 next Steam friend to invite, Shift+F11 previous, Ctrl+F11 send the invite
+         (on the invite screen also D-pad down / up and A on the controller)
    Everything is also written to MKXAccess.log next to the game exe. */
 #include "win.h"
 
-#define VERSION L"0.6.0"
+#define VERSION L"0.6.1"
 #define FOCUS_DELAY 70   /* ms to wait after focus moves, for descriptions to arrive */
 #define IMAGE_BASE 0x140000000ULL
 
@@ -42,7 +43,7 @@ static gotoLabel_t   o_gotoAndPlay, o_gotoAndStop;
 
 /* ------------------------------------------------------------------ */
 /* event queue: game thread -> worker thread                           */
-enum { EV_TEXT = 1, EV_HTML, EV_VTEXT, EV_VHTML, EV_FOCUS, EV_SETFOCUS, EV_GRID, EV_ANIM, EV_LABEL, EV_COMBOEND, EV_INVITE };
+enum { EV_TEXT = 1, EV_HTML, EV_VTEXT, EV_VHTML, EV_FOCUS, EV_SETFOCUS, EV_GRID, EV_ANIM, EV_LABEL, EV_COMBOEND, EV_INVITE, EV_PAD };
 #define PATHMAX 192
 #define TEXTMAX 512
 typedef struct { int type; u64 id; DWORD t; int x, y; wchar path[PATHMAX]; wchar text[TEXTMAX]; } Event;
@@ -226,6 +227,62 @@ static void anim_event(void* self, const char* label)
 }
 static DWORD hk_gotoAndPlay(void* self, const char* label) { anim_event(self, label); return o_gotoAndPlay(self, label); }
 static DWORD hk_gotoAndStop(void* self, const char* label) { anim_event(self, label); return o_gotoAndStop(self, label); }
+
+/* controller: while the invite screen is up, D-pad down/up and A choose a friend
+   and send the invite. Those buttons are hidden from the game then, so A can't
+   also press something in the game; B still reaches the game (cancel). */
+typedef struct { WORD wButtons; BYTE lt, rt; short lx, ly, rx, ry; } XPad;
+typedef struct { DWORD packet; XPad pad; } XState;
+typedef DWORD (WINAPI *XInputGetState_t)(DWORD, XState*);
+static XInputGetState_t o_XInputGetState;
+static volatile int g_padMode;        /* set by the worker while the invite screen is up */
+static WORD g_padPrev[4];
+#define PAD_UP 0x0001
+#define PAD_DOWN 0x0002
+#define PAD_A 0x1000
+static DWORD WINAPI hk_XInputGetState(DWORD idx, XState* st)
+{
+    DWORD r = o_XInputGetState(idx, st);
+    if (r != 0 || !st || idx >= 4) return r;
+    WORD b = st->pad.wButtons, fresh = b & ~g_padPrev[idx];
+    g_padPrev[idx] = b;
+    if (g_padMode) {
+        WORD mine = fresh & (PAD_UP | PAD_DOWN | PAD_A);
+        if (mine) { Event* e = q_begin(); if (e) { e->type = EV_PAD; e->x = mine; q_end(); } }
+        st->pad.wButtons &= (WORD)~(PAD_UP | PAD_DOWN | PAD_A);
+    }
+    return r;
+}
+
+/* point the game's import of XInputGetState at our function */
+static int patch_import(const char* dll, const char* fn, void* hook, void** orig)
+{
+    BYTE* base = (BYTE*)g_base;
+    DWORD lfanew = *(DWORD*)(base + 0x3C);
+    DWORD impRva = *(DWORD*)(base + lfanew + 0x90);   /* data directory 1: imports (PE32+) */
+    if (!impRva) return 0;
+    for (DWORD* d = (DWORD*)(base + impRva); d[3]; d += 5) {   /* IMAGE_IMPORT_DESCRIPTOR */
+        const char* name = (const char*)(base + d[3]);
+        int k = 0; while (dll[k]) { char a = name[k], c = dll[k]; if (a >= 'a' && a <= 'z') a -= 32; if (c >= 'a' && c <= 'z') c -= 32; if (a != c) break; k++; }
+        if (dll[k] || name[k]) continue;
+        u64* names = (u64*)(base + (d[0] ? d[0] : d[4]));
+        u64* iat = (u64*)(base + d[4]);
+        for (int i = 0; names[i]; i++) {
+            if (names[i] >> 63) continue;   /* by ordinal */
+            const char* nm = (const char*)(base + (DWORD)names[i] + 2);
+            int j = 0; while (fn[j] && nm[j] == fn[j]) j++;
+            if (fn[j] || nm[j]) continue;
+            DWORD old;
+            if (!VirtualProtect(&iat[i], 8, 0x04, &old)) return 0;
+            *orig = (void*)iat[i];
+            iat[i] = (u64)hook;
+            VirtualProtect(&iat[i], 8, old, &old);
+            return 1;
+        }
+    }
+    return 0;
+}
+static int g_padHooked;
 
 static HookDef g_hooks[] = {
     { "UIElement::gotoAndPlay",        0x140C36B20, 7, {0x48,0x83,0xEC,0x28,0x4C,0x8B,0xC2}, hk_gotoAndPlay,    (void**)&o_gotoAndPlay },
@@ -765,6 +822,12 @@ static void handle_text(Event* ev)
     if (now - e->winStart > 4000) { e->winStart = now; e->winCount = 0; }
     e->winCount++;
     e->changed = now;
+    if (g_padMode && contains_ci(e->path, "looking.mainText") &&
+        (contains_ci(clean, "CANCEL") || contains_ci(clean, "FOUND") || contains_ci(clean, "ACCEPTED") ||
+         contains_ci(clean, "JOINING") || contains_ci(clean, "EXITING") || contains_ci(clean, "LEAVING"))) {
+        g_padMode = 0;   /* invite screen is over: the controller goes back to the game */
+        log_w((const wchar*)L"INVITE controller mode off");
+    }
     if (!clean[0] || ignored_path(e->path)) return;
     /* a value of the item you are on changed (volume 45 -> 44, ON -> OFF): say it right
        away, unless a whole page is being filled in at this moment (checked in the loop) */
@@ -1085,6 +1148,7 @@ static void read_screen(void)
 
 static void handle_focus(Event* ev)
 {
+    if (g_padMode) { g_padMode = 0; log_w((const wchar*)L"INVITE controller mode off"); }   /* back in a menu */
     const wchar* tag = ev->type == EV_FOCUS ? (const wchar*)L"FOCUS" : ev->type == EV_SETFOCUS ? (const wchar*)L"SETFOCUS" :
                       ev->type == EV_ANIM ? (const wchar*)L"ANIMFOCUS" : (const wchar*)L"GRID";
     wchar extra[PATHMAX + 40]; extra[0] = 0;
@@ -1232,8 +1296,9 @@ static void steam_invite_requested(Event* ev)
     steam_load_friends();
     logf3((const wchar*)L"STEAM friends online", 0, 0);
     /* queued, so the game's own "INVITE PLAYERS" / "WAITING FOR OPPONENT" isn't cut off */
-    speak(g_nfriends ? (const wchar*)L"Invite a friend. F11 for the next friend, Shift F11 for the previous one, Control F11 to send the invite."
-                     : (const wchar*)L"Invite a friend. None of your Steam friends are online right now. Press F11 to check again.", 0);
+    g_padMode = g_padHooked;
+    speak(g_nfriends ? (const wchar*)L"Invite a friend. D-pad down or F11 for the next friend, D-pad up or Shift F11 for the previous one, A or Control F11 to send the invite."
+                     : (const wchar*)L"Invite a friend. None of your Steam friends are online right now. Press D-pad down or F11 to check again.", 0);
 }
 
 static void steam_invite_key(int shift, int ctrl)
@@ -1317,6 +1382,7 @@ static DWORD WINAPI worker(void* arg)
         logf3(g_hookOk[i] == 1 ? (const wchar*)L"HOOK OK" : g_hookOk[i] == -1 ? (const wchar*)L"HOOK SKIPPED (bytes differ)" : (const wchar*)L"HOOK FAILED", name, 0);
     }
 
+    log_w(g_padHooked ? (const wchar*)L"HOOK OK [XInputGetState import]" : (const wchar*)L"HOOK FAILED [XInputGetState import]");
     wcpy(p, g_dir, MAX_PATH); wcat(p, (const wchar*)L"nvdaControllerClient64.dll", MAX_PATH);
     HMODULE nv = LoadLibraryW(p);
     if (nv) {
@@ -1346,6 +1412,11 @@ static DWORD WINAPI worker(void* arg)
             else if (ev.type == EV_LABEL) logf3((const wchar*)L"ANIM", ev.path[0] ? ev.path : (const wchar*)L"?", ev.text);
             else if (ev.type == EV_COMBOEND) combo_finished(&ev);
             else if (ev.type == EV_INVITE) steam_invite_requested(&ev);
+            else if (ev.type == EV_PAD) {
+                if (ev.x & PAD_DOWN) steam_invite_key(0, 0);
+                if (ev.x & PAD_UP) steam_invite_key(1, 0);
+                if (ev.x & PAD_A) steam_invite_key(0, 1);
+            }
             else handle_focus(&ev);
         }
         DWORD now = GetTickCount();
@@ -1408,6 +1479,7 @@ BOOL WINAPI DllMain(HMODULE h, DWORD reason, void* r)
         if (ok) g_getCell = (getCell_t)gc;
     }
     install_hooks();
+    g_padHooked = patch_import("XINPUT9_1_0.dll", "XInputGetState", (void*)hk_XInputGetState, (void**)&o_XInputGetState);
     g_ready = 1;
     HANDLE t = CreateThread(0, 1 << 20, worker, 0, 0, 0); /* 1 MB committed stack */
     if (t) CloseHandle(t);
