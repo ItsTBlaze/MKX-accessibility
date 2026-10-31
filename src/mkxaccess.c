@@ -7,10 +7,11 @@
      F7  toggle auto-reading of new text that is not tied to focus
      F8  mute / unmute MKX Access
      F9  say which version of MKX Access is running
+     F10 turn the damage and combo readout on or off
    Everything is also written to MKXAccess.log next to the game exe. */
 #include "win.h"
 
-#define VERSION L"0.4.8"
+#define VERSION L"0.5.0"
 #define FOCUS_DELAY 70   /* ms to wait after focus moves, for descriptions to arrive */
 #define IMAGE_BASE 0x140000000ULL
 
@@ -586,6 +587,114 @@ static DWORD g_burstT; static int g_burstN;                           /* texts s
 
 static int is_child_path(const wchar* child, const wchar* parent);
 static void say(const wchar* raw, int interrupt);
+static void speak(const wchar* s, int interrupt);
+
+/* ------------------------------------------------------------------ */
+/* fight readout: damage per hit and combo totals                      */
+/* Practice mode's damage panel sets, for each hit,
+     _root.BaseScreen.Elements.DamageBase.Damage.Cell<n>.DamageText.text  "7.00%"
+     _root.BaseScreen.Elements.DamageBase.Damage.Cell<n>.HitText.text     "MID"
+   and every fight's combo counter sets
+     _root.comboNotifierLeft|Right.container.hitsAmount.text  "3"
+     _root.comboNotifierLeft|Right.container.damageAmount.text "12%"
+   A single hit is read after a short wait ("mid, 7 percent"). Hits that turn
+   into a combo are not read one by one; the combo is read once it ends
+   ("player 1, 3 hit combo, 12 percent"). */
+static int g_fightReadout = 1;
+static wchar g_hitDmg[32], g_hitLevel[32]; static int g_hitCell = -1; static DWORD g_hitT; static int g_hitPending;
+typedef struct { wchar hits[16], dmg[32]; DWORD t; int dirty; } Combo;
+static Combo g_combo[2];
+static wchar g_seq[256]; static int g_seqN; static DWORD g_seqT;   /* "high, mid, mid" */
+#define HIT_WAIT 500     /* ms: a second hit within this turns the first into a combo */
+#define COMBO_END 700    /* ms without a new hit: the combo is over */
+
+static int cell_index(const wchar* p)
+{
+    const wchar* q = p; int n = -1;
+    for (; *q; q++) if (q[0] == 'C' && q[1] == 'e' && q[2] == 'l' && q[3] == 'l' && q[4] >= '0' && q[4] <= '9') {
+        n = 0; for (q += 4; *q >= '0' && *q <= '9'; q++) n = n * 10 + (*q - '0');
+        break;
+    }
+    return n;
+}
+/* "7.00%" -> "7 percent", "4.75%" -> "4.75 percent", "12%" -> "12 percent" */
+static void say_percent(const wchar* in, wchar* out, int max)
+{
+    int o = 0, i = 0, dot = -1;
+    for (; in[i] && in[i] != '%' && o < max - 12; i++) { if (in[i] == '.') dot = o; out[o++] = in[i]; }
+    if (dot >= 0) { while (o > dot + 1 && out[o - 1] == '0') o--; if (o == dot + 1) o = dot; }
+    out[o] = 0;
+    if (in[i] == '%') wcat(out, (const wchar*)L" percent", max);
+}
+static void lower_word(const wchar* in, wchar* out, int max)
+{
+    int i = 0; for (; in[i] && i < max - 1; i++) { wchar c = in[i]; out[i] = (c >= 'A' && c <= 'Z') ? c + 32 : c; } out[i] = 0;
+}
+/* returns 1 if the text belongs to the fight readout (and has been handled) */
+static int fight_text(Entry* e, const wchar* clean, DWORD t)
+{
+    const wchar* p = e->path;
+    if (contains_ci(p, "DamageBase.Damage.Cell")) {
+        int cell = cell_index(p);
+        if (cell != g_hitCell || t - g_hitT > 100) { g_hitCell = cell; g_hitDmg[0] = g_hitLevel[0] = 0; }
+        if (contains_ci(p, "DamageText")) wcpy(g_hitDmg, clean, 32);
+        else if (contains_ci(p, "HitText")) {
+            wcpy(g_hitLevel, clean, 32);
+            /* remember the levels of the hits in a row, for the combo summary */
+            if (t - g_seqT > COMBO_END) { g_seq[0] = 0; g_seqN = 0; }
+            if (clean[0]) {
+                wchar lw[32]; lower_word(clean, lw, 32);
+                if (g_seq[0]) wcat(g_seq, (const wchar*)L", ", 256);
+                wcat(g_seq, lw, 256); g_seqN++;
+            }
+            g_seqT = t;
+        }
+        g_hitT = t; g_hitPending = 1;
+        return 1;
+    }
+    if (contains_ci(p, "comboNotifier")) {
+        int side = contains_ci(p, "comboNotifierRight") ? 1 : 0;
+        Combo* c = &g_combo[side];
+        if (contains_ci(p, "hitsAmount")) { wcpy(c->hits, clean, 16); c->t = t; c->dirty = 1; }
+        else if (contains_ci(p, "damageAmount")) { wcpy(c->dmg, clean, 32); c->t = t; c->dirty = 1; }
+        return 1;   /* "Hits" / "Damage" labels are not read either */
+    }
+    return 0;
+}
+static void fight_tick(DWORD now)
+{
+    if (!g_fightReadout) { g_hitPending = 0; g_combo[0].dirty = g_combo[1].dirty = 0; return; }
+    /* a combo that just grew swallows the hit that started it */
+    for (int s = 0; s < 2; s++)
+        if (g_hitPending && g_combo[s].dirty && (int)(g_combo[s].t - g_hitT) >= -50) g_hitPending = 0;
+    if (g_hitPending && now - g_hitT >= HIT_WAIT) {
+        g_hitPending = 0;
+        wchar line[96]; line[0] = 0;
+        if (g_hitLevel[0]) lower_word(g_hitLevel, line, 96);
+        if (g_hitDmg[0]) {
+            wchar pct[48]; say_percent(g_hitDmg, pct, 48);
+            if (line[0]) wcat(line, (const wchar*)L", ", 96);
+            wcat(line, pct, 96);
+        }
+        if (line[0]) speak(line, 1);
+    }
+    for (int s = 0; s < 2; s++) {
+        Combo* c = &g_combo[s];
+        if (!c->dirty || now - c->t < COMBO_END) continue;
+        c->dirty = 0;
+        int hits = 0; for (int i = 0; c->hits[i] >= '0' && c->hits[i] <= '9'; i++) hits = hits * 10 + (c->hits[i] - '0');
+        if (hits < 2) continue;
+        wchar line[128];
+        wcpy(line, s == 0 ? (const wchar*)L"player 1, " : (const wchar*)L"player 2, ", 128);
+        wcat(line, c->hits, 128); wcat(line, (const wchar*)L" hit combo", 128);
+        if (c->dmg[0]) { wchar pct[48]; say_percent(c->dmg, pct, 48); wcat(line, (const wchar*)L", ", 128); wcat(line, pct, 128); }
+        /* the hit levels, only when they clearly belong to this combo */
+        static wchar full[400];
+        wcpy(full, line, 400);
+        if (g_seqN == hits && (int)(c->t - g_seqT) >= -100 && (int)(c->t - g_seqT) <= 100) { wcat(full, (const wchar*)L", ", 400); wcat(full, g_seq, 400); }
+        speak(full, 1);
+    }
+}
 
 static void handle_text(Event* ev)
 {
@@ -599,6 +708,10 @@ static void handle_text(Event* ev)
     if (ev->path[0]) wcpy(e->path, ev->path, PATHMAX);
     DWORD prevTouched = e->touched;
     e->touched = ev->t;                        /* set again, even if unchanged: still current */
+    if (fight_text(e, clean, ev->t)) {         /* damage and combos have their own readout */
+        if (!weq(e->text, clean)) { logf3(tag, e->path, clean); wcpy(e->text, clean, TEXTMAX); }
+        return;
+    }
     int again = 0;
     if (weq(e->text, clean)) {
         /* a popup asking the same question again ("Do you want to save your changes?")
@@ -975,8 +1088,9 @@ static int pressed(int vk)
 static void poll_keys(void)
 {
     int front = game_in_front();
-    int f5 = pressed(0x74), f6 = pressed(0x75), f7 = pressed(0x76), f8 = pressed(0x77), f9 = pressed(0x78);
+    int f5 = pressed(0x74), f6 = pressed(0x75), f7 = pressed(0x76), f8 = pressed(0x77), f9 = pressed(0x78), f10 = pressed(0x79);
     if (!front) return;
+    if (f10) { g_fightReadout = !g_fightReadout; speak_force(g_fightReadout ? (const wchar*)L"Damage readout on" : (const wchar*)L"Damage readout off"); }
     if (f9) speak_force((const wchar*)(L"MKX Access version " VERSION));
     if (f5) { static wchar again[2048]; wcpy(again, g_last[0] ? g_last : (const wchar*)L"Nothing yet", 2048); speak(again, 1); }
     if (f6) read_screen();
@@ -988,6 +1102,7 @@ static void poll_keys(void)
 /* the timing side of the speech logic, run every 25 ms (also used by test/harness.c) */
 static void speech_tick(DWORD now)
 {
+    fight_tick(now);
     if (g_valEntry && now - g_valT >= 40) {
         Entry* e = (Entry*)g_valEntry; g_valEntry = 0;
         int pageLoad = (g_burstT - g_valT < 60) && g_burstN > 3;

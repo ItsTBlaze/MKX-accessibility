@@ -1,4 +1,4 @@
-MKX Access 0.4.8 - screen reader support for Mortal Kombat X
+MKX Access 0.5.0 - screen reader support for Mortal Kombat X
 =============================================================
 
 MKX Access makes Mortal Kombat X (Steam, PC) speak through the NVDA
@@ -35,10 +35,16 @@ Pause menu and move list
 - Move list section tabs, such as "SPECIAL MOVES".
 - Fatalities you haven't unlocked yet say "hidden" instead of their input.
 
-Practice mode
-- The hit level of your attacks as they land: HIGH, MID, LOW,
-  OVERHEAD. Your own button presses are not read, so it stays quiet
-  while you practise.
+Damage and combos
+- In practice mode, each single hit with its level and damage:
+  "mid, 7 percent".
+- In any fight, combos once they end, with the total damage:
+  "player 1, 3 hit combo, 8 percent". In practice mode your own combos
+  also list each hit's level: "player 1, 3 hit combo, 8 percent,
+  high, mid, mid".
+- Hits that are part of a combo are not read one by one, so the
+  readout keeps up. Your own button presses are not read either.
+- F10 turns the damage and combo readout off and on.
 
 Online
 - Matchmaking status as it changes: "LOOKING FOR OPPONENT",
@@ -75,6 +81,7 @@ HOTKEYS (only while the game window is in front)
       when this is off.
   F8  mute or unmute the mod
   F9  say which version of the mod is running
+  F10 turn the damage and combo readout on or off
 
 
 KNOWN LIMITS
@@ -82,8 +89,8 @@ KNOWN LIMITS
   which the mod can't read. Instead, your friend can open Steam's
   friends list and choose Join game on your name, or you can choose
   Invite to game on theirs.
-- Fights themselves are not narrated beyond practice mode hit levels.
-  The game's own sounds still tell you most of what is happening.
+- Fights are not narrated beyond damage and combos. The game's own
+  sounds still tell you most of what is happening.
 - Steam version only. On a different version, the mod says "could not
   hook this game version" and stays out of the way.
 - Best used offline. The mod only reads text and doesn't change
