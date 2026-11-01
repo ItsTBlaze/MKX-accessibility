@@ -1,4 +1,4 @@
-MKX Access 0.7.2 - screen reader support for Mortal Kombat X
+MKX Access 0.8.0 - screen reader support for Mortal Kombat X
 =============================================================
 
 MKX Access makes Mortal Kombat X (Steam, PC) speak through the NVDA
@@ -66,6 +66,19 @@ Rooms
   value is read with its label: "ping 85 milliseconds".
 - Player options (A on a player) and the chat box (X) are read.
 
+Typing a room name or a chat message
+- X on the room list (CREATE ROOM) opens a text box. Its title and
+  keys are read, then: "Type with the keyboard. Enter to accept,
+  Escape to cancel, F6 reads what you typed."
+- Type the name on your keyboard. Each key you type is read back
+  ("cap B", "l", "a", "space"), and Backspace reads the letter it
+  removed. When the box is empty again you hear "blank".
+- F6 while the box is open reads the title and everything typed so
+  far: "CREATE ROOM, typed: Blaze room".
+- The same works for room chat messages.
+- If Steam would show its own on-screen keyboard (Big Picture mode),
+  the mod has the game use its own readable text box instead.
+
 Fight challenges
 - When someone challenges you, it's read in one sentence:
   "sixpaths099 challenged you to Versus. Level 73, 341 wins 179
@@ -126,7 +139,8 @@ What it leaves out, to keep things quiet
 HOTKEYS (only while the game window is in front)
   F5  repeat the last thing spoken
   F6  read everything on the current screen. Use this if a screen
-      seems silent.
+      seems silent. While typing a name or message, F6 reads
+      what you have typed so far.
   F7  turn auto-reading of new text on or off. Menus still read
       when this is off.
   F8  mute or unmute the mod

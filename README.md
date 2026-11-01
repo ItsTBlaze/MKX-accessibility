@@ -5,13 +5,13 @@ game's menus aloud through [NVDA](https://www.nvaccess.org/): menu items and the
 descriptions, option names with their values, character and variation select,
 move lists, damage and combos in fights, and popup messages. It also replaces Steam's unreadable invite window with a spoken friend list, and announces invites you receive so you can accept them from the game.
 
-Status: early testing (version 0.7.2). Feedback is very welcome; see
+Status: early testing (version 0.8.0). Feedback is very welcome; see
 [Reporting problems](#reporting-problems).
 
 ## Install
 
 1. Download **[MKXAccess.zip](https://github.com/ItsTBlaze/MKX-accessibility/raw/main/download/MKXAccess.zip)**.
-   This link always gets the newest version (currently 0.7.2).
+   This link always gets the newest version (currently 0.8.0).
 2. Unzip it, and make sure Mortal Kombat X is closed.
 3. Open the unzipped MKXAccess folder and run **Install**. It finds the game on its
    own and tells you when it's done. Windows may ask whether to run a file from the
@@ -34,7 +34,7 @@ These only work while the game window is in front.
 | Key | Action |
 | --- | --- |
 | F5 | Repeat the last thing spoken |
-| F6 | Read everything on the current screen |
+| F6 | Read everything on the current screen (while typing a room name or message: read what you typed) |
 | F7 | Turn auto-reading of new text on or off |
 | F8 | Mute or unmute the mod |
 | F9 | Say which version of the mod is running |

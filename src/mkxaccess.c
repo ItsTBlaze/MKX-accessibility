@@ -14,7 +14,7 @@
    Everything is also written to MKXAccess.log next to the game exe. */
 #include "win.h"
 
-#define VERSION L"0.7.2"
+#define VERSION L"0.8.0"
 #define FOCUS_DELAY 70   /* ms to wait after focus moves, for descriptions to arrive */
 #define IMAGE_BASE 0x140000000ULL
 
@@ -522,6 +522,9 @@ static const char* g_tok[][2] = {
     {"AwayUp","up back"},{"TowardsUp","up forward"},{"AwayDown","down back"},{"TowardsDown","down forward"},
     {"FP","front punch"},{"BP","back punch"},{"FK","front kick"},{"BK","back kick"},
     {"BLK","block"},{"BL","block"},{"INT","interact"},{"SS","stance switch"},{"FLIP","flip stance"},
+    {"Key_Ent","Enter"},{"Key_Enter","Enter"},{"Key_Esc","Escape"},{"Key_Escape","Escape"},{"Key_NM_5","numpad 5"},
+    {"Key_Bksp","backspace"},{"Key_Back","backspace"},{"Key_Space","space"},{"Key_Tab","tab"},
+    {"Force_A","A"},{"Force_B","B"},{"Force_X","X"},{"Force_Y","Y"},
     {"DPAD","d-pad"},{"DPADUP","d-pad up"},{"DPADDOWN","d-pad down"},{"DPADLEFT","d-pad left"},{"DPADRIGHT","d-pad right"},
 };
 static int tok_eq(const wchar* s, int n, const char* t)
@@ -806,6 +809,101 @@ static void fight_tick(DWORD now)
    detail texts (record, odds, ping, buttons) are part of the focus sentence */
 static int challenge_text(Entry* e, const wchar* clean);
 
+/* ------------------------------------------------------------------ */
+/* typing a name or message (Create Room, room chat)                    */
+/* On PC the game's text box (PCSystemChatPad + TextBox, screen ui_c_text_entry_box)
+   shows each typed key by re-setting
+     _root.msgBoxAnim.dynamic_text.messaging   the text typed so far
+   next to staticText.message (the title), descriptionText.messaging and
+   center_msging.text (the keys). Keys come from the window's WM_CHAR messages, so
+   the keyboard types; Enter accepts, Escape cancels. The title and keys are read
+   like any popup; the typed text is echoed one character at a time here instead. */
+#define GSYSTEMCHATPAD 0x14331D568ULL   /* SystemChatPad* (a PCSystemChatPad on PC) */
+static Entry* entry_at(const char* path);
+static wchar g_entryRaw[TEXTMAX]; static int g_entryOpen; static DWORD g_entryOpenT, g_entryKeyT; static int g_entryHint;
+static int is_entry_text(const wchar* p) { return contains_ci(p, "msgBoxAnim.dynamic_text.messag"); }
+/* the text box is still up: PCSystemChatPad+0xA8 -> TextBox, whose first byte is
+   "enabled" (set by TextBox::Initialize, cleared by TextBox::Terminate) */
+static int entry_box_up(void)
+{
+    if (!g_base) return 1;   /* test harness */
+    u64* gp = (u64*)(g_base + (GSYSTEMCHATPAD - IMAGE_BASE));
+    if (!readable(gp, 8) || !*gp || !readable((BYTE*)*gp + 0xA8, 8)) return 0;
+    BYTE* tb = *(BYTE**)((BYTE*)*gp + 0xA8);
+    return tb && readable(tb, 1) && tb[0];
+}
+static void char_name(wchar c, wchar* out, int max)
+{
+    static const struct { wchar c; const char* w; } names[] = {
+        {' ',"space"},{'.',"dot"},{',',"comma"},{'-',"dash"},{'_',"underscore"},{'\'',"apostrophe"},{'"',"quote"},
+        {'!',"exclamation"},{'?',"question"},{':',"colon"},{';',"semicolon"},{'/',"slash"},{'\\',"backslash"},
+        {'(',"left paren"},{')',"right paren"},{'[',"left bracket"},{']',"right bracket"},{'&',"and"},{'@',"at"},
+        {'#',"number"},{'$',"dollar"},{'%',"percent"},{'*',"star"},{'+',"plus"},{'=',"equals"},{'<',"less"},{'>',"greater"},
+        {'~',"tilde"},{'^',"caret"},{'|',"bar"},{'`',"grave"},{'{',"left brace"},{'}',"right brace"},
+    };
+    out[0] = 0;
+    for (int i = 0; i < (int)(sizeof(names) / sizeof(names[0])); i++)
+        if (names[i].c == c) { int k = 0; for (; names[i].w[k] && k < max - 1; k++) out[k] = (wchar)names[i].w[k]; out[k] = 0; return; }
+    if (c >= 'A' && c <= 'Z') { wcpy(out, (const wchar*)L"cap ", max); int n = wlen(out); out[n] = c; out[n + 1] = 0; return; }
+    out[0] = c; out[1] = 0;
+}
+static void entry_say_all(int interrupt)
+{
+    static wchar line[TEXTMAX + 64];
+    wcpy(line, g_entryRaw[0] ? g_entryRaw : (const wchar*)L"blank", TEXTMAX + 64);
+    speak(line, interrupt);
+}
+static void entry_text(const wchar* raw, DWORD t)
+{
+    static wchar nw[TEXTMAX]; wcpy(nw, raw ? raw : (const wchar*)L"", TEXTMAX);
+    int on = wlen(g_entryRaw), nn = wlen(nw);
+    logf3((const wchar*)L"TYPED", 0, nw);
+    if (!g_entryOpen) {               /* the box just opened (it starts with an empty text) */
+        g_entryOpen = 1; g_entryOpenT = t; g_entryHint = 1; wcpy(g_entryRaw, nw, TEXTMAX);
+        log_w((const wchar*)L"ENTRY open");
+        if (!nn) return;
+        on = 0;
+    }
+    g_entryKeyT = t; g_entryHint = 0;   /* typing started: no hint needed */
+    int same = 1; for (int i = 0; i < on && i < nn; i++) if (g_entryRaw[i] != nw[i]) { same = 0; break; }
+    wchar w[32];
+    if (same && nn == on + 1) { char_name(nw[on], w, 32); speak(w, 1); }        /* a key typed */
+    else if (same && nn == on - 1) {                                           /* backspace */
+        char_name(g_entryRaw[nn], w, 32);
+        static wchar line[64]; wcpy(line, w, 64);
+        if (!nn) wcat(line, (const wchar*)L", blank", 64);
+        speak(line, 1);
+    }
+    else if (nn != on || !same) { wcpy(g_entryRaw, nw, TEXTMAX); entry_say_all(1); return; }
+    wcpy(g_entryRaw, nw, TEXTMAX);
+}
+static void entry_tick(DWORD now)
+{
+    if (!g_entryOpen) return;
+    /* how to type, once the title and keys have been read */
+    if (g_entryHint && now - g_entryOpenT >= 900) {
+        g_entryHint = 0;
+        speak((const wchar*)L"Type with the keyboard. Enter to accept, Escape to cancel, F6 reads what you typed.", 0);
+    }
+    static DWORD lastCheck;
+    if (now - lastCheck >= 200) {
+        lastCheck = now;
+        if (now - g_entryOpenT > 500 && !entry_box_up()) { g_entryOpen = 0; g_entryHint = 0; g_entryRaw[0] = 0; log_w((const wchar*)L"ENTRY closed"); }
+    }
+}
+/* F6 while typing: the title and the text so far */
+static int entry_read(void)
+{
+    if (!g_entryOpen) return 0;
+    static wchar line[TEXTMAX * 2 + 64]; line[0] = 0;
+    Entry* title = entry_at("_root.msgBoxAnim.staticText.message");
+    if (title) { wcpy(line, title->text, TEXTMAX * 2 + 64); wcat(line, (const wchar*)L", ", TEXTMAX * 2 + 64); }
+    wcat(line, (const wchar*)L"typed: ", TEXTMAX * 2 + 64);
+    wcat(line, g_entryRaw[0] ? g_entryRaw : (const wchar*)L"blank", TEXTMAX * 2 + 64);
+    say(line, 1);
+    return 1;
+}
+
 static void handle_text(Event* ev)
 {
     wchar clean[TEXTMAX];
@@ -820,6 +918,11 @@ static void handle_text(Event* ev)
     e->touched = ev->t;                        /* set again, even if unchanged: still current */
     if (fight_text(e, clean, ev->t)) {         /* damage and combos have their own readout */
         if (!weq(e->text, clean)) { logf3(tag, e->path, clean); wcpy(e->text, clean, TEXTMAX); }
+        return;
+    }
+    if (ev->path[0] && is_entry_text(ev->path)) {   /* typing: echoed key by key, never auto-read */
+        wcpy(e->text, clean, TEXTMAX);
+        entry_text(ev->text, ev->t);
         return;
     }
     int again = 0;
@@ -1412,6 +1515,15 @@ static void hk_inviteDialog(void* self, u64 lobby)
     if (!g_nvOk && o_inviteDialog) o_inviteDialog(self, lobby);   /* no NVDA: keep Steam's own window */
 }
 
+typedef BYTE (*suGamepadText_t)(void*, int, int, const char*, DWORD, const char*);
+static suGamepadText_t o_gamepadText;
+static BYTE hk_gamepadText(void* self, int mode, int lines, const char* desc, DWORD maxChars, const char* existing)
+{
+    if (!g_nvOk && nv_test) g_nvOk = nv_test() == 0;
+    if (!g_nvOk && o_gamepadText) return o_gamepadText(self, mode, lines, desc, maxChars, existing);
+    return 0;   /* "not shown": the game opens its own readable text box */
+}
+
 /* patch the vtable slot once Steam is up (the game starts Steam after we load) */
 static void steam_try_hook(void)
 {
@@ -1432,6 +1544,20 @@ static void steam_try_hook(void)
     VirtualProtect(slot, 8, old, &old);
     g_inviteHooked = 1;
     log_w((const wchar*)L"STEAM invite window replaced (SteamFriends slot 27)");
+    /* Steam's on-screen keyboard (Big Picture) can't be read either: TextBox::Initialize
+       asks ISteamUtils::ShowGamepadTextInput (slot 20) first and only uses the game's
+       own text box when Steam says no. With NVDA running, Steam says no. */
+    SteamIface_t utilsFn = (SteamIface_t)GetProcAddress(sa, "SteamUtils");
+    void* u = utilsFn ? utilsFn() : 0;
+    if (u && readable(u, 8) && readable(*(void**)u, 21 * 8)) {
+        void** us = &(*(void***)u)[20];
+        if (VirtualProtect(us, 8, 0x04, &old)) {
+            o_gamepadText = (suGamepadText_t)*us;
+            *us = (void*)hk_gamepadText;
+            VirtualProtect(us, 8, old, &old);
+            log_w((const wchar*)L"STEAM on-screen keyboard replaced by the game's text box (SteamUtils slot 20)");
+        }
+    }
 }
 
 static const wchar* state_word(int st)
@@ -1623,7 +1749,7 @@ static void poll_keys(void)
     if (f10) { g_damageNumbers = !g_damageNumbers; speak_force(g_damageNumbers ? (const wchar*)L"Damage numbers on" : (const wchar*)L"Damage numbers off"); }
     if (f9) speak_force((const wchar*)(L"MKX Access version " VERSION));
     if (f5) { static wchar again[2048]; wcpy(again, g_last[0] ? g_last : (const wchar*)L"Nothing yet", 2048); speak(again, 1); }
-    if (f6) read_screen();
+    if (f6 && !entry_read()) read_screen();
     if (f7) { g_autoRead = !g_autoRead; speak_force(g_autoRead ? (const wchar*)L"Auto read on" : (const wchar*)L"Auto read off"); }
     if (f8) { g_muted = !g_muted; speak_force(g_muted ? (const wchar*)L"MKX Access muted" : (const wchar*)L"MKX Access on"); }
 }
@@ -1635,6 +1761,7 @@ static void speech_tick(DWORD now)
 {
     fight_tick(now);
     challenge_tick(now);
+    entry_tick(now);
     if (g_valEntry && now - g_valT >= 40) {
         Entry* e = (Entry*)g_valEntry; g_valEntry = 0;
         int pageLoad = (g_burstT - g_valT < 60) && g_burstN > 3;
