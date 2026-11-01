@@ -1,4 +1,4 @@
-MKX Access 0.8.0 - screen reader support for Mortal Kombat X
+MKX Access 0.8.1 - screen reader support for Mortal Kombat X
 =============================================================
 
 MKX Access makes Mortal Kombat X (Steam, PC) speak through the NVDA

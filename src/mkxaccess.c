@@ -14,7 +14,7 @@
    Everything is also written to MKXAccess.log next to the game exe. */
 #include "win.h"
 
-#define VERSION L"0.8.0"
+#define VERSION L"0.8.1"
 #define FOCUS_DELAY 70   /* ms to wait after focus moves, for descriptions to arrive */
 #define IMAGE_BASE 0x140000000ULL
 
@@ -129,10 +129,20 @@ static int same_as_last(void* self, const wchar* s, int salt, wchar* pathOut)
     return 0;
 }
 
+/* Practice mode's input history (ButtonLogs) re-sets its cells all the time and is
+   never read: drop it here, before it costs a queue slot and a log line. It was about
+   three quarters of all text the mod handled in a practice session. */
+static int hot_ignored(const wchar* p)
+{
+    for (; *p; p++)
+        if (p[0] == 'B' && p[1] == 'u' && p[2] == 't' && p[3] == 't' && p[4] == 'o' && p[5] == 'n' &&
+            p[6] == 'L' && p[7] == 'o' && p[8] == 'g' && p[9] == 's') return 1;
+    return 0;
+}
 static void hk_setText(void* self, const wchar* s)
 {
     wchar path[PATHMAX];
-    if (same_as_last(self, s, 1, path)) { o_setText(self, s); return; }
+    if (same_as_last(self, s, 1, path) || hot_ignored(path)) { o_setText(self, s); return; }
     Event* e = q_begin();
     if (e) { e->type = EV_TEXT; e->id = (u64)self; wcpy(e->path, path, PATHMAX); if (s) wcpy(e->text, s, TEXTMAX); q_end(); }
     o_setText(self, s);
@@ -140,7 +150,7 @@ static void hk_setText(void* self, const wchar* s)
 static DWORD hk_setTextHTML(void* self, const wchar* s)
 {
     wchar path[PATHMAX];
-    if (same_as_last(self, s, 2, path)) return o_setTextHTML(self, s);
+    if (same_as_last(self, s, 2, path) || hot_ignored(path)) return o_setTextHTML(self, s);
     Event* e = q_begin();
     if (e) { e->type = EV_HTML; e->id = (u64)self; wcpy(e->path, path, PATHMAX); if (s) wcpy(e->text, s, TEXTMAX); q_end(); }
     return o_setTextHTML(self, s);
@@ -1803,7 +1813,7 @@ static DWORD WINAPI worker(void* arg)
                           (const wchar*)(L"MKX Access " VERSION L" could not hook this game version");
     int announced = 0, frontSince = 0; DWORD frontT = 0;
 
-    DWORD lastFlush = GetTickCount(), lastStats = GetTickCount(), lastSteamTry = 0;
+    DWORD lastStats = GetTickCount(), lastSteamTry = 0;
     for (;;) {
         WaitForSingleObject(g_qevent, 25);
         for (;;) {
@@ -1842,7 +1852,9 @@ static DWORD WINAPI worker(void* arg)
         steam_invite_tick(now);
         if (g_cbRegistered == 2) { log_w((const wchar*)L"STEAM listening for invites (LobbyInvite_t)"); g_cbRegistered = 3; }
         poll_keys();
-        if (now - lastFlush > 2000) { if (g_log != INVALID_HANDLE_VALUE) FlushFileBuffers(g_log); lastFlush = now; }
+        /* no forced disk flush: written lines are in Windows' file cache right away
+           (readable by anyone, kept if the game crashes); forcing them onto the disk
+           every 2 seconds only made extra disk work */
         if (now - lastStats > 60000) {
             wchar a[24], b[24], c[24], line[128];
             utoa_w((u64)g_statCalls, a, 10, 1); utoa_w((u64)g_statDeduped, b, 10, 1); utoa_w((u64)g_statQueued, c, 10, 1);
