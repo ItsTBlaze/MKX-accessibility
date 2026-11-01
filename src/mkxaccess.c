@@ -14,7 +14,7 @@
    Everything is also written to MKXAccess.log next to the game exe. */
 #include "win.h"
 
-#define VERSION L"0.7.0"
+#define VERSION L"0.7.1"
 #define FOCUS_DELAY 70   /* ms to wait after focus moves, for descriptions to arrive */
 #define IMAGE_BASE 0x140000000ULL
 
@@ -970,9 +970,98 @@ static int count_children(const wchar* parent)
     return n;
 }
 
+/* ------------------------------------------------------------------ */
+/* online rooms: room list entries and players in a room have their own wording */
+static Entry* child_ending(const wchar* parent, const char* suffix)
+{
+    int sl = 0; while (suffix[sl]) sl++;
+    Entry* best = 0;
+    for (int i = 0; i < NENT; i++) {
+        Entry* e = &g_ent[i];
+        if (!e->used || !e->text[0] || !is_child_path(e->path, parent)) continue;
+        int pl = wlen(e->path); if (pl < sl) continue;
+        if (!starts_ci(e->path + pl - sl, suffix)) continue;
+        if (!best || (int)(e->touched - best->touched) > 0) best = e;
+    }
+    return best;
+}
+static int is_na(const wchar* t) { return weq_ci(t, "N/A") || weq_ci(t, "...") || !t[0]; }
+/* "4/12" -> "4 wins 12 losses" */
+static void say_record(const wchar* t, wchar* out, int max)
+{
+    int i = 0; wchar a[16], b[16]; int na = 0, nb = 0;
+    while (t[i] && t[i] != '/' && na < 15) a[na++] = t[i++]; a[na] = 0;
+    if (t[i] == '/') i++;
+    while (t[i] && nb < 15) b[nb++] = t[i++]; b[nb] = 0;
+    wcpy(out, a, max); wcat(out, weq(a, (const wchar*)L"1") ? (const wchar*)L" win " : (const wchar*)L" wins ", max);
+    wcat(out, b, max); wcat(out, weq(b, (const wchar*)L"1") ? (const wchar*)L" loss" : (const wchar*)L" losses", max);
+}
+/* "85ms" -> "ping 85 milliseconds" */
+static void say_ping(const wchar* t, wchar* out, int max)
+{
+    int i = 0, o = 0; wchar n[16];
+    while (t[i] >= '0' && t[i] <= '9' && o < 15) n[o++] = t[i++]; n[o] = 0;
+    wcpy(out, (const wchar*)L"ping ", max); wcat(out, n[0] ? n : t, max);
+    if (n[0]) wcat(out, weq(n, (const wchar*)L"1") ? (const wchar*)L" millisecond" : (const wchar*)L" milliseconds", max);
+}
+/* a single value of a room player that changed while you're on them */
+static int room_value_line(Entry* e, wchar* out, int max)
+{
+    if (!contains_ci(e->path, "PlayerListGridSelectElement.Cell_") || is_na(e->text)) return 0;
+    if (contains_ci(e->path, "pingText")) { say_ping(e->text, out, max); return 1; }
+    if (contains_ci(e->path, "winLossValue")) { say_record(e->text, out, max); return 1; }
+    if (contains_ci(e->path, "matchUpValue")) { say_percent(e->text, out, max); wcat(out, (const wchar*)L" win odds", max); return 1; }
+    return 0;
+}
+static int room_focus_line(wchar* out, int max)
+{
+    out[0] = 0;
+    if (contains_ci(g_focusPath, "RoomListGridSelectElement.Cell_")) {
+        Entry* name = child_ending(g_focusPath, "LabelText");
+        Entry* count = child_ending(g_focusPath, "ValueText");
+        if (!name) return 0;
+        wcpy(out, name->text, max);
+        if (count) { wcat(out, (const wchar*)L", ", max); wcat(out, count->text, max); wcat(out, weq(count->text, (const wchar*)L"1") ? (const wchar*)L" player" : (const wchar*)L" players", max); }
+        return 1;
+    }
+    if (!contains_ci(g_focusPath, "PlayerListGridSelectElement.Cell_")) return 0;
+    Entry* name = child_ending(g_focusPath, "gamertagText.text");
+    if (!name) return 0;
+    wchar part[96];
+    wcpy(out, name->text, max);
+    Entry* e;
+    if ((e = child_ending(g_focusPath, "playerLevel")) && !is_na(e->text)) { wcat(out, (const wchar*)L", level ", max); wcat(out, e->text, max); }
+    Entry* st = child_ending(g_focusPath, "statusTitle.text");
+    Entry* mode = child_ending(g_focusPath, "info.help.text");
+    if (st) {
+        wchar low[48]; lower_word(st->text, low, 48);
+        wcat(out, (const wchar*)L", ", max); wcat(out, low, max);
+        if (mode && !is_na(mode->text)) { wcat(out, (const wchar*)L" ", max); wcat(out, mode->text, max); }
+        else if (weq_ci(st->text, "LOOKING FOR")) wcat(out, (const wchar*)L" any match", max);
+    }
+    if ((e = child_ending(g_focusPath, "winLossValue.text")) && !is_na(e->text)) { say_record(e->text, part, 96); wcat(out, (const wchar*)L", ", max); wcat(out, part, max); }
+    if ((e = child_ending(g_focusPath, "matchUpValue.color.text")) && !is_na(e->text)) { say_percent(e->text, part, 96); wcat(out, (const wchar*)L", ", max); wcat(out, part, max); wcat(out, (const wchar*)L" win odds", max); }
+    if ((e = child_ending(g_focusPath, "pingText")) && !is_na(e->text)) { say_ping(e->text, part, 96); wcat(out, (const wchar*)L", ", max); wcat(out, part, max); }
+    return 1;
+}
+
 static void announce_focus(void)
 {
     static wchar out[2048]; out[0] = 0; int count = 0;
+    /* a room player highlighted before the game filled in the name: try again shortly */
+    static int roomRetries;
+    if ((contains_ci(g_focusPath, "PlayerListGridSelectElement.Cell_") || contains_ci(g_focusPath, "RoomListGridSelectElement.Cell_")) &&
+        !room_focus_line(out, 2048)) {
+        if (roomRetries++ < 10) { g_focusPending = 1; g_focusTime = GetTickCount() - FOCUS_DELAY + 100; return; }
+    }
+    roomRetries = 0;
+    if (room_focus_line(out, 2048)) {   /* room list entry or a player in a room */
+        wcpy(g_focusItem, g_focusPath, PATHMAX);
+        int start = g_nrecent > NRECENT ? g_nrecent - NRECENT : 0;
+        for (int k = start; k < g_nrecent; k++) if ((int)(g_recentT[k % NRECENT] - g_focusTime) >= -30) g_recentSpoken[k % NRECENT] = 1;
+        say(out, 1);
+        return;
+    }
     /* 1. the focused item's own label: the focus marker is often a sibling of the
           label (lineItem2.menuItem.leftFocus.posAlign vs lineItem2.menuItem.centerJust.text),
           so climb up until we reach a parent that holds 1-4 text items */
@@ -1105,6 +1194,7 @@ static void auto_read(DWORD now)
         Entry* e = &g_ent[g_recent[s]];
         if (e->gen != g_recentGen[s] || is_busy(e, now) || !e->text[0] || (no_letters(e->text) && !is_price(e->path))) continue;
         if (ends_with_colon(e->text)) continue;   /* a label waiting for its value, e.g. "WINS:" */
+        if (contains_ci(e->path, "PlayerListGridSelectElement.Cell_") || contains_ci(e->path, "RoomListGridSelectElement.Cell_")) continue;   /* read on focus */
         if (now - g_lastTime < 3000 && wlen(e->text) >= 8 && contains_w(g_last, e->text)) continue;   /* just said it */
         int dup = 0; for (int i = 0; i < nc; i++) if (cand[i] == e) dup = 1;   /* only its latest value */
         if (!dup && nc < 64) cand[nc++] = e;
@@ -1452,7 +1542,11 @@ static void speech_tick(DWORD now)
     if (g_valEntry && now - g_valT >= 40) {
         Entry* e = (Entry*)g_valEntry; g_valEntry = 0;
         int pageLoad = (g_burstT - g_valT < 60) && g_burstN > 3;
-        if (!g_focusPending && !pageLoad && e->gen == g_valGen && e->text[0]) say(e->text, 1);
+        if (!g_focusPending && !pageLoad && e->gen == g_valGen && e->text[0]) {
+            static wchar lbl[160];
+            if (room_value_line(e, lbl, 160)) say(lbl, 1);
+            else if (!(contains_ci(e->path, "PlayerListGridSelectElement.Cell_") && is_na(e->text))) say(e->text, 1);
+        }
     }
     if (g_focusPending && now - g_focusTime >= FOCUS_DELAY) { g_focusPending = 0; announce_focus(); }
     auto_read(now);

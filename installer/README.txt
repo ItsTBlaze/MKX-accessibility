@@ -1,4 +1,4 @@
-MKX Access 0.7.0 - screen reader support for Mortal Kombat X
+MKX Access 0.7.1 - screen reader support for Mortal Kombat X
 =============================================================
 
 MKX Access makes Mortal Kombat X (Steam, PC) speak through the NVDA
@@ -55,6 +55,15 @@ Online
 - Matchmaking status as it changes: "LOOKING FOR OPPONENT",
   "WAITING FOR OPPONENT", "MATCH FOUND".
 - Your opponent's name, ping, and the accept and decline buttons.
+
+Rooms
+- The room list reads each room with its player count:
+  "Black Dragon, 2 players".
+- Inside a room, each player is read in full: "ZuRRK, level 1,
+  playing Versus, 4 wins 12 losses, 61 percent win odds, ping 85
+  milliseconds". Players who are free read as "looking for any match".
+- If a player's ping or record updates while you're on them, the new
+  value is read with its label: "ping 85 milliseconds".
 
 Inviting friends (private match, private King of the Hill)
 - Steam's invite window can't be read, so the mod replaces it. When
