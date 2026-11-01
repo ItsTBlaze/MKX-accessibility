@@ -14,7 +14,7 @@
    Everything is also written to MKXAccess.log next to the game exe. */
 #include "win.h"
 
-#define VERSION L"0.7.1"
+#define VERSION L"0.7.2"
 #define FOCUS_DELAY 70   /* ms to wait after focus moves, for descriptions to arrive */
 #define IMAGE_BASE 0x140000000ULL
 
@@ -801,6 +801,11 @@ static void fight_tick(DWORD now)
     }
 }
 
+/* incoming fight challenges: the 30 second timer is only read at 10 and 5 seconds
+   left; a challenger who isn't the focused one is announced on their own; the
+   detail texts (record, odds, ping, buttons) are part of the focus sentence */
+static int challenge_text(Entry* e, const wchar* clean);
+
 static void handle_text(Event* ev)
 {
     wchar clean[TEXTMAX];
@@ -839,6 +844,7 @@ static void handle_text(Event* ev)
         log_w((const wchar*)L"INVITE controller mode off");
     }
     if (!clean[0] || ignored_path(e->path)) return;
+    if (challenge_text(e, clean)) return;
     /* a value of the item you are on changed (volume 45 -> 44, ON -> OFF): say it right
        away, unless a whole page is being filled in at this moment (checked in the loop) */
     if (ev->t - g_burstT > 50) { g_burstT = ev->t; g_burstN = 0; }
@@ -972,6 +978,7 @@ static int count_children(const wchar* parent)
 
 /* ------------------------------------------------------------------ */
 /* online rooms: room list entries and players in a room have their own wording */
+static int challenge_line(const wchar* cell, wchar* out, int max, int brief);
 static Entry* child_ending(const wchar* parent, const char* suffix)
 {
     int sl = 0; while (suffix[sl]) sl++;
@@ -1013,9 +1020,36 @@ static int room_value_line(Entry* e, wchar* out, int max)
     if (contains_ci(e->path, "matchUpValue")) { say_percent(e->text, out, max); wcat(out, (const wchar*)L" win odds", max); return 1; }
     return 0;
 }
+static Entry* entry_at(const char* path)   /* the current text of one exact label path */
+{
+    wchar w[PATHMAX]; int i = 0; for (; path[i] && i < PATHMAX - 1; i++) w[i] = (BYTE)path[i]; w[i] = 0;
+    Entry* e = lookup_entry(hash_path(w));
+    return (e && e->text[0]) ? e : 0;
+}
+/* "sixpaths099 challenged you to Versus. Level 73, ..., 30 seconds to answer. A accept, ..." */
+static int challenge_line(const wchar* cell, wchar* out, int max, int brief)
+{
+    Entry* name = child_ending(cell, "gamertagText.text");
+    if (!name) return 0;
+    wchar part[96]; Entry* e;
+    wcpy(out, name->text, max);
+    wcat(out, brief ? (const wchar*)L" also challenged you" : (const wchar*)L" challenged you", max);
+    if (brief) return 1;
+    if ((e = entry_at("_root.looking.matchTextBig.text")) && !is_na(e->text)) { wcat(out, (const wchar*)L" to ", max); wcat(out, e->text, max); }
+    wcat(out, (const wchar*)L".", max);
+    if ((e = child_ending(cell, "playerLevel.text")) && !is_na(e->text)) { wcat(out, (const wchar*)L" Level ", max); wcat(out, e->text, max); }
+    if ((e = entry_at("_root.looking.detailData1.Text")) && !is_na(e->text)) { say_record(e->text, part, 96); wcat(out, (const wchar*)L", ", max); wcat(out, part, max); }
+    if ((e = entry_at("_root.looking.detailData2.Text")) && !is_na(e->text)) { say_percent(e->text, part, 96); wcat(out, (const wchar*)L", ", max); wcat(out, part, max); wcat(out, (const wchar*)L" win odds", max); }
+    if ((e = entry_at("_root.looking.detailData3.ping.pingTextWrapper.pingText")) && !is_na(e->text)) { say_ping(e->text, part, 96); wcat(out, (const wchar*)L", ", max); wcat(out, part, max); }
+    if ((e = child_ending(cell, "timer.text")) && !is_na(e->text)) { wcat(out, (const wchar*)L". ", max); wcat(out, e->text, max); wcat(out, (const wchar*)L" seconds to answer", max); }
+    if ((e = entry_at("_root.looking.buttonText.text"))) { wcat(out, (const wchar*)L". ", max); wcat(out, e->text, max); }
+    return 1;
+}
+
 static int room_focus_line(wchar* out, int max)
 {
     out[0] = 0;
+    if (contains_ci(g_focusPath, "onlineMainMenu.panel.challenges.cell")) return challenge_line(g_focusPath, out, max, 0);
     if (contains_ci(g_focusPath, "RoomListGridSelectElement.Cell_")) {
         Entry* name = child_ending(g_focusPath, "LabelText");
         Entry* count = child_ending(g_focusPath, "ValueText");
@@ -1045,12 +1079,72 @@ static int room_focus_line(wchar* out, int max)
     return 1;
 }
 
+static wchar g_newChal[PATHMAX]; static DWORD g_newChalT, g_chalCountT, g_lastChallenger;
+static wchar g_pingPend[64]; static DWORD g_pingT;
+static int challenge_text(Entry* e, const wchar* clean)
+{
+    const wchar* p = e->path;
+    if (starts_ci(p, "_root.looking.detail") || starts_ci(p, "_root.looking.module") || starts_ci(p, "_root.looking.matchText")) {
+        if (!contains_ci(g_focusPath, "challenges.cell")) return 0;
+        /* the ping often arrives after the sentence: read it once it does */
+        if (contains_ci(p, "pingText") && !is_na(clean) && e->touched - g_focusTime > FOCUS_DELAY) {
+            /* held briefly: when a second challenger arrives, the game shows their ping first */
+            say_ping(clean, g_pingPend, 64); g_pingT = e->touched;
+        }
+        return 1;   /* part of the challenge sentence */
+    }
+    if (contains_ci(p, "panel.option0.titleState.title") && e->touched - g_chalCountT < 600) return 1;   /* count was just said */
+    if (!contains_ci(p, "onlineMainMenu.panel.challenges.cell")) return 0;
+    /* the challenge cell this text belongs to: path up to ".focus" */
+    static wchar cell[PATHMAX]; wcpy(cell, p, PATHMAX);
+    for (int i = 0; cell[i]; i++) if (starts_ci(cell + i, ".focus")) { cell[i] = 0; break; }
+    if (contains_ci(p, "timer.text")) {
+        int n = 0; for (int i = 0; clean[i] >= '0' && clean[i] <= '9'; i++) n = n * 10 + (clean[i] - '0');
+        if (n == 10 || n == 5) {
+            Entry* name = child_ending(cell, "gamertagText.text");
+            wchar line[128]; wcpy(line, clean, 128); wcat(line, (const wchar*)L" seconds left to answer", 128);
+            if (name) { wcat(line, (const wchar*)L" ", 128); wcat(line, name->text, 128); }
+            speak(line, 0);
+        }
+        return 1;
+    }
+    if (contains_ci(p, "gamertagText.text")) {
+        /* a challenger arrived: decide shortly, once the game has moved focus (or not) */
+        wcpy(g_newChal, cell, PATHMAX); g_newChalT = e->touched; g_lastChallenger = e->touched;
+        return 1;
+    }
+    return 1;   /* level, faction rank: read with the challenge */
+}
+/* run from speech_tick: a challenger the focus didn't go to is announced on their own */
+static void challenge_tick(DWORD now)
+{
+    if (g_pingPend[0] && now - g_pingT >= 250) {
+        if ((int)(g_lastChallenger - g_pingT) < -100 || (int)(g_lastChallenger - g_pingT) > 250) speak(g_pingPend, 0);
+        g_pingPend[0] = 0;
+    }
+    if (!g_newChal[0] || now - g_newChalT < 200) return;
+    static wchar cell[PATHMAX]; wcpy(cell, g_newChal, PATHMAX); g_newChal[0] = 0;
+    if (weq(g_focusPath, cell) || is_child_path(g_focusPath, cell)) return;   /* the focus sentence covers it */
+    int another = contains_ci(g_focusPath, "challenges.cell");
+    static wchar line[600];
+    if (!challenge_line(cell, line, 600, another)) return;
+    Entry* count = entry_at("_root.onlineMainMenu.panel.option0.titleState.title.text");
+    if (another && count) { wchar low[64]; lower_word(count->text, low, 64); wcat(line, (const wchar*)L", ", 600); wcat(line, low, 600); }
+    g_chalCountT = now;
+    /* the pending count is in this sentence: don't read it again */
+    int start = g_nrecent > NRECENT ? g_nrecent - NRECENT : 0;
+    for (int k = start; k < g_nrecent; k++)
+        if (contains_ci(g_ent[g_recent[k % NRECENT]].path, "panel.option0.titleState.title")) g_recentSpoken[k % NRECENT] = 1;
+    say(line, 0);
+}
+
 static void announce_focus(void)
 {
     static wchar out[2048]; out[0] = 0; int count = 0;
     /* a room player highlighted before the game filled in the name: try again shortly */
     static int roomRetries;
-    if ((contains_ci(g_focusPath, "PlayerListGridSelectElement.Cell_") || contains_ci(g_focusPath, "RoomListGridSelectElement.Cell_")) &&
+    if ((contains_ci(g_focusPath, "PlayerListGridSelectElement.Cell_") || contains_ci(g_focusPath, "RoomListGridSelectElement.Cell_") ||
+         contains_ci(g_focusPath, "onlineMainMenu.panel.challenges.cell")) &&
         !room_focus_line(out, 2048)) {
         if (roomRetries++ < 10) { g_focusPending = 1; g_focusTime = GetTickCount() - FOCUS_DELAY + 100; return; }
     }
@@ -1536,9 +1630,11 @@ static void poll_keys(void)
 
 /* ------------------------------------------------------------------ */
 /* the timing side of the speech logic, run every 25 ms (also used by test/harness.c) */
+static void challenge_tick(DWORD now);
 static void speech_tick(DWORD now)
 {
     fight_tick(now);
+    challenge_tick(now);
     if (g_valEntry && now - g_valT >= 40) {
         Entry* e = (Entry*)g_valEntry; g_valEntry = 0;
         int pageLoad = (g_burstT - g_valT < 60) && g_burstN > 3;

@@ -1,4 +1,4 @@
-MKX Access 0.7.1 - screen reader support for Mortal Kombat X
+MKX Access 0.7.2 - screen reader support for Mortal Kombat X
 =============================================================
 
 MKX Access makes Mortal Kombat X (Steam, PC) speak through the NVDA
@@ -64,6 +64,17 @@ Rooms
   milliseconds". Players who are free read as "looking for any match".
 - If a player's ping or record updates while you're on them, the new
   value is read with its label: "ping 85 milliseconds".
+- Player options (A on a player) and the chat box (X) are read.
+
+Fight challenges
+- When someone challenges you, it's read in one sentence:
+  "sixpaths099 challenged you to Versus. Level 73, 341 wins 179
+  losses, 3 percent win odds. 30 seconds to answer. A accept,
+  Y decline, B minimize, X ignore player."
+- A second challenge while you're answering the first:
+  "PandaPlant also challenged you, 2 pending challenges".
+- The 30 second countdown is only read at 10 and 5 seconds left:
+  "10 seconds left to answer sixpaths099".
 
 Inviting friends (private match, private King of the Hill)
 - Steam's invite window can't be read, so the mod replaces it. When
