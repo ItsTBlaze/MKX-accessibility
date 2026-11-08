@@ -12,6 +12,7 @@ static unsigned g_clock;
 void* memcpy_(void* d,const void* s,SIZE_T n){return __builtin_memcpy(d,s,n);}
 void* memset_(void* d,int c,SIZE_T n){return __builtin_memset(d,c,n);}
 DWORD WINAPI GetTickCount(void){return g_clock;}
+BOOL WINAPI ReadFile(HANDLE a,void*b,DWORD c,DWORD*d,void*e){return 0;} DWORD WINAPI GetFileSize(HANDLE a,DWORD*b){return 0;}
 BOOL WINAPI WriteFile(HANDLE h,const void* b,DWORD n,DWORD* w,void* o){ if(strstr(b,"SPEAK")) fwrite(b,1,n,stdout); *w=n; return 1;}
 int WINAPI WideCharToMultiByte(UINT cp,DWORD f,LPCWSTR s,int n,char* o,int m,const char*a,BOOL*b){int i=0;for(;s[i]&&i<m-4;i++){unsigned c=s[i]; if(c<0x80)o[i]=c; else o[i]='?';} o[i]=0; return i+1;}
 int WINAPI MultiByteToWideChar(UINT a,DWORD b,const char* s,int n,LPWSTR o,int m){int i=0;for(;s[i]&&i<m-1;i++)o[i]=(unsigned char)s[i];o[i]=0;return i+1;}

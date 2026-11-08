@@ -30,3 +30,5 @@ GetSystemDirectoryW
 WideCharToMultiByte
 MultiByteToWideChar
 DisableThreadLibraryCalls
+ReadFile
+GetFileSize

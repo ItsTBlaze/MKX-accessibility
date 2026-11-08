@@ -14,7 +14,7 @@
    Everything is also written to MKXAccess.log next to the game exe. */
 #include "win.h"
 
-#define VERSION L"0.8.1"
+#define VERSION L"0.9.0"
 #define FOCUS_DELAY 70   /* ms to wait after focus moves, for descriptions to arrive */
 #define IMAGE_BASE 0x140000000ULL
 
@@ -44,7 +44,7 @@ static gotoLabel_t   o_gotoAndPlay, o_gotoAndStop;
 
 /* ------------------------------------------------------------------ */
 /* event queue: game thread -> worker thread                           */
-enum { EV_TEXT = 1, EV_HTML, EV_VTEXT, EV_VHTML, EV_FOCUS, EV_SETFOCUS, EV_GRID, EV_ANIM, EV_LABEL, EV_COMBOEND, EV_INVITE, EV_PAD, EV_LOBBYINVITE };
+enum { EV_TEXT = 1, EV_HTML, EV_VTEXT, EV_VHTML, EV_FOCUS, EV_SETFOCUS, EV_GRID, EV_ANIM, EV_LABEL, EV_COMBOEND, EV_INVITE, EV_PAD, EV_LOBBYINVITE, EV_MENUPAD };
 #define PATHMAX 192
 #define TEXTMAX 512
 typedef struct { int type; u64 id; DWORD t; int x, y; wchar path[PATHMAX]; wchar text[TEXTMAX]; } Event;
@@ -255,6 +255,15 @@ static WORD g_padPrev[4];
 #define PAD_DOWN 0x0002
 #define PAD_A 0x1000
 #define PAD_BACK 0x0020
+#define PAD_LEFT 0x0004
+#define PAD_RIGHT 0x0008
+#define PAD_START 0x0010
+#define PAD_B 0x2000
+/* accessibility menu (F3, or hold Back and press Start): while it is open the game
+   gets no controller input and no key presses, so nothing moves underneath it */
+static volatile int g_menuOpen;
+static WORD g_padHide[4];   /* buttons still held from the menu: hidden until released */
+static int g_padWasMenu[4];
 static DWORD WINAPI hk_XInputGetState(DWORD idx, XState* st)
 {
     DWORD r = o_XInputGetState(idx, st);
@@ -262,6 +271,19 @@ static DWORD WINAPI hk_XInputGetState(DWORD idx, XState* st)
     steam_register_callbacks();   /* game thread: safe place to register with Steam */
     WORD b = st->pad.wButtons, fresh = b & ~g_padPrev[idx];
     g_padPrev[idx] = b;
+    if (!g_menuOpen && (b & PAD_BACK) && (fresh & PAD_START)) {   /* Back + Start opens the menu */
+        g_menuOpen = 1;
+        Event* e = q_begin(); if (e) { e->type = EV_MENUPAD; e->x = PAD_BACK | PAD_START; q_end(); }
+    }
+    if (g_menuOpen) {
+        WORD mine = fresh & (PAD_UP | PAD_DOWN | PAD_LEFT | PAD_RIGHT | PAD_A | PAD_B | PAD_START);
+        if (mine && g_padWasMenu[idx]) { Event* e = q_begin(); if (e) { e->type = EV_MENUPAD; e->x = mine | (b & PAD_BACK); q_end(); } }
+        g_padWasMenu[idx] = 1;
+        memset(&st->pad, 0, sizeof(st->pad));
+        return r;
+    }
+    if (g_padWasMenu[idx]) { g_padWasMenu[idx] = 0; g_padHide[idx] = b; }   /* menu just closed */
+    if (g_padHide[idx]) { g_padHide[idx] &= b; st->pad.wButtons &= (WORD)~g_padHide[idx]; b = st->pad.wButtons; }
     if (g_acceptMode && !g_padMode) {
         if (fresh & PAD_BACK) { Event* e = q_begin(); if (e) { e->type = EV_PAD; e->x = PAD_BACK; q_end(); } }
         st->pad.wButtons &= (WORD)~PAD_BACK;
@@ -304,6 +326,17 @@ static int patch_import(const char* dll, const char* fn, void* hook, void** orig
 }
 static int g_padHooked;
 
+/* keyboard: the game gets its keys from raw input through PCInput::HandleKeyboardInput
+   (this, device, key, down). While the menu is open key presses are kept from the game;
+   key releases still go through so no key is left stuck down. */
+typedef void (*kbd_t)(void*, void*, WORD, BYTE);
+static kbd_t o_kbd;
+static void hk_kbd(void* self, void* dev, WORD key, BYTE down)
+{
+    if (g_menuOpen && down) return;
+    o_kbd(self, dev, key, down);
+}
+
 static HookDef g_hooks[] = {
     { "UIElement::gotoAndPlay",        0x140C36B20, 7, {0x48,0x83,0xEC,0x28,0x4C,0x8B,0xC2}, hk_gotoAndPlay,    (void**)&o_gotoAndPlay },
     { "UIElement::gotoAndStop",        0x140C36BA0, 7, {0x48,0x83,0xEC,0x28,0x4C,0x8B,0xC2}, hk_gotoAndStop,    (void**)&o_gotoAndStop },
@@ -315,6 +348,7 @@ static HookDef g_hooks[] = {
     { "UIFocusElementWidget::GainFocus",0x1405B9590,6, {0x40,0x53,0x48,0x83,0xEC,0x20},      hk_gainFocus,      (void**)&o_gainFocus },
     { "UIElement::setFocus",           0x140C37B30, 5, {0x48,0x89,0x5C,0x24,0x08},           hk_setFocus,       (void**)&o_setFocus },
     { "UIGridSelectWidget::DrawCellGainFocus",0x1405B7550,6,{0x40,0x53,0x48,0x83,0xEC,0x20}, hk_drawCell,       (void**)&o_drawCell },
+    { "PCInput::HandleKeyboardInput",  0x140813550, 5, {0x48,0x89,0x5C,0x24,0x08},           hk_kbd,            (void**)&o_kbd },
 };
 #define NHOOKS (int)(sizeof(g_hooks)/sizeof(g_hooks[0]))
 static int g_hookOk[NHOOKS];
@@ -1734,6 +1768,288 @@ static void steam_invite_tick(DWORD now)
     if (g_rxLobby && now - g_rxT > INVITE_EXPIRES) { g_rxLobby = 0; g_acceptMode = 0; log_w((const wchar*)L"INVITE-RECEIVED expired"); }
 }
 
+/* menu speech: heard even while the mod is muted, and F5 repeats it */
+static void speak_force_q(const wchar* s, int interrupt)
+{
+    logf3((const wchar*)L"SPEAK", 0, s);
+    wcpy(g_last, s, 2048); g_lastTime = GetTickCount();
+    if (!nv_speak) return;
+    if (interrupt && nv_cancel) nv_cancel();
+    nv_speak(s);
+}
+
+/* ------------------------------------------------------------------ */
+/* sounds: .wav files in the "MKXAccess Sounds" folder next to the mod  */
+/* Each cue is one file that anyone can replace with their own (16-bit PCM .wav plays
+   at the volume set in the menu; other kinds play at their own volume). A missing
+   file just stays silent. Played with Windows' PlaySound from memory, one at a time. */
+typedef int (WINAPI *PlaySoundW_t)(const void*, HMODULE, DWORD);
+static PlaySoundW_t p_PlaySound;
+typedef struct { const char* name; int tried; BYTE* raw; DWORD len; BYTE* play; int playVol; DWORD dataOff, dataLen; int pcm16; } Sound;
+static Sound g_snd[] = {
+    {"you75"}, {"you50"}, {"you25"}, {"opponent75"}, {"opponent50"}, {"opponent25"},
+    {"menu_open"}, {"menu_close"}, {"menu_move"}, {"menu_edge"},
+};
+#define NSND (int)(sizeof(g_snd) / sizeof(g_snd[0]))
+static int g_volume = 80;   /* percent */
+static void wcat_a(wchar* d, const char* s, int max) { int n = wlen(d); for (int i = 0; s[i] && n < max - 1; i++) d[n++] = (wchar)(BYTE)s[i]; d[n] = 0; }
+static void wcat_u(wchar* d, u64 v, int max) { wchar num[24]; utoa_w(v, num, 10, 1); wcat(d, num, max); }
+static unsigned rd32(const BYTE* p) { return p[0] | (p[1] << 8) | (p[2] << 16) | ((unsigned)p[3] << 24); }
+static void snd_load(Sound* s)
+{
+    s->tried = 1;
+    wchar path[MAX_PATH]; wcpy(path, g_dir, MAX_PATH);
+    wcat(path, (const wchar*)L"MKXAccess Sounds\\", MAX_PATH); wcat_a(path, s->name, MAX_PATH); wcat(path, (const wchar*)L".wav", MAX_PATH);
+    HANDLE f = CreateFileW(path, 0x80000000 /* GENERIC_READ */, 1 /* share read */, 0, 3 /* OPEN_EXISTING */, 0x80, 0);
+    if (f == INVALID_HANDLE_VALUE || !f) return;
+    DWORD len = GetFileSize(f, 0), got = 0;
+    if (len >= 44 && len <= 8u * 1024 * 1024) {
+        s->raw = (BYTE*)VirtualAlloc(0, len, MEM_COMMIT | MEM_RESERVE, 0x04);
+        s->play = (BYTE*)VirtualAlloc(0, len, MEM_COMMIT | MEM_RESERVE, 0x04);
+        if (s->raw && s->play && ReadFile(f, s->raw, len, &got, 0) && got == len) s->len = len;
+    }
+    CloseHandle(f);
+    if (!s->len || rd32(s->raw) != 0x46464952 /* RIFF */ || rd32(s->raw + 8) != 0x45564157 /* WAVE */) { s->len = 0; return; }
+    for (DWORD o = 12; o + 8 <= s->len; ) {
+        unsigned id = rd32(s->raw + o), sz = rd32(s->raw + o + 4);
+        if (id == 0x20746D66 /* fmt  */ && sz >= 16 && o + 24 <= s->len)
+            s->pcm16 = (s->raw[o + 8] | (s->raw[o + 9] << 8)) == 1 && (s->raw[o + 22] | (s->raw[o + 23] << 8)) == 16;
+        if (id == 0x61746164 /* data */) { s->dataOff = o + 8; s->dataLen = sz; if (s->dataOff + s->dataLen > s->len) s->dataLen = s->len - s->dataOff; }
+        o += 8 + sz + (sz & 1);
+    }
+    memcpy(s->play, s->raw, s->len); s->playVol = 100;
+}
+static void snd_play(const char* name)
+{
+    if (g_muted || !g_base) return;
+    if (!p_PlaySound) {
+        HMODULE w = LoadLibraryW((const wchar*)L"winmm.dll");
+        p_PlaySound = w ? (PlaySoundW_t)GetProcAddress(w, "PlaySoundW") : 0;
+        if (!p_PlaySound) return;
+    }
+    Sound* s = 0;
+    for (int i = 0; i < NSND; i++) { const char* a = g_snd[i].name; int k = 0; while (a[k] && a[k] == name[k]) k++; if (!a[k] && !name[k]) s = &g_snd[i]; }
+    if (!s) return;
+    if (!s->tried) snd_load(s);
+    if (!s->len || g_volume <= 0) return;
+    if (s->pcm16 && s->playVol != g_volume) {   /* scale a fresh copy to the menu volume */
+        p_PlaySound(0, 0, 0);
+        short* src = (short*)(s->raw + s->dataOff); short* dst = (short*)(s->play + s->dataOff);
+        for (DWORD i = 0; i < s->dataLen / 2; i++) dst[i] = (short)((int)src[i] * g_volume / 100);
+        s->playVol = g_volume;
+    }
+    p_PlaySound(s->play, 0, 0x0001 | 0x0002 | 0x0004);   /* SND_ASYNC | SND_NODEFAULT | SND_MEMORY */
+}
+
+/* ------------------------------------------------------------------ */
+/* settings, kept in MKXAccess.ini next to the mod                      */
+static int g_healthYou = 1, g_healthOpp = 0, g_side = 0;   /* g_side: 0 automatic, 1 player 1, 2 player 2 */
+static void settings_path(wchar* p) { wcpy(p, g_dir, MAX_PATH); wcat(p, (const wchar*)L"MKXAccess.ini", MAX_PATH); }
+static struct { const char* key; int* v; int lo, hi; } g_setDefs[] = {
+    {"health_you", &g_healthYou, 0, 1}, {"health_opponent", &g_healthOpp, 0, 1}, {"your_side", &g_side, 0, 2},
+    {"volume", &g_volume, 0, 100}, {"damage_numbers", &g_damageNumbers, 0, 1}, {"auto_read", &g_autoRead, 0, 1},
+};
+#define NSET (int)(sizeof(g_setDefs) / sizeof(g_setDefs[0]))
+static void settings_load(void)
+{
+    wchar p[MAX_PATH]; settings_path(p);
+    HANDLE f = CreateFileW(p, 0x80000000, 1, 0, 3, 0x80, 0);
+    if (f == INVALID_HANDLE_VALUE || !f) return;
+    static char buf[4096]; DWORD got = 0;
+    ReadFile(f, buf, sizeof(buf) - 1, &got, 0); CloseHandle(f);
+    buf[got] = 0;
+    for (char* line = buf; *line; ) {
+        char* end = line; while (*end && *end != '\n') end++;
+        for (int i = 0; i < NSET; i++) {
+            const char* k = g_setDefs[i].key; int n = 0; while (k[n] && line[n] == k[n]) n++;
+            if (k[n] || line[n] != '=') continue;
+            int v = 0, any = 0; for (char* c = line + n + 1; c < end && *c >= '0' && *c <= '9'; c++) { v = v * 10 + (*c - '0'); any = 1; }
+            if (any && v >= g_setDefs[i].lo && v <= g_setDefs[i].hi) *g_setDefs[i].v = v;
+        }
+        line = *end ? end + 1 : end;
+    }
+    log_w((const wchar*)L"SETTINGS loaded from MKXAccess.ini");
+}
+static void settings_save(void)
+{
+    if (!g_base) return;
+    static char buf[1024]; int n = 0;
+    const char* head = "; MKX Access settings - changed from the accessibility menu (F3, or hold Back and press Start)\r\n";
+    for (int i = 0; head[i]; i++) buf[n++] = head[i];
+    for (int i = 0; i < NSET; i++) {
+        for (const char* k = g_setDefs[i].key; *k; k++) buf[n++] = *k;
+        buf[n++] = '=';
+        char num[8]; int m = 0, v = *g_setDefs[i].v; do { num[m++] = (char)('0' + v % 10); v /= 10; } while (v);
+        while (m) buf[n++] = num[--m];
+        buf[n++] = '\r'; buf[n++] = '\n';
+    }
+    wchar p[MAX_PATH]; settings_path(p);
+    HANDLE f = CreateFileW(p, 0x40000000 /* GENERIC_WRITE */, 1, 0, 2 /* CREATE_ALWAYS */, 0x80, 0);
+    if (f == INVALID_HANDLE_VALUE || !f) return;
+    DWORD w; WriteFile(f, buf, n, &w, 0); CloseHandle(f);
+}
+
+/* ------------------------------------------------------------------ */
+/* health cues: a sound when a fighter drops to 75, 50 and 25 percent   */
+/* GFGGameInfo (FG_GAME_INFO*) +0x1968: PLAYER_INFO* for player 1 and 2.
+   PLAYER_INFO +0x20 FGCharacterObj*, +0x28 its handle (valid while obj+8 == handle,
+   bit 30 clear: what PLAYER_INFO::GetActiveFGCharacterObj checks).
+   FGCharacterObj +0xA38 life, +0xA3C max life (floats; FGCharacterObj::GetLife/GetMaxLife).
+   Which fighter is you: PLAYER_INFO +0x50 GAMEPAD* (GAMEPAD+0 index; above 7 is a
+   network pad, Input / GAMEPAD::IsNetworkGamepad), +0x2D8/+0x2E0 the AI drone and its
+   handle (set when the computer plays that side). */
+#define GFGGAMEINFO 0x1430DBA00ULL
+static u64 game_ptr(u64 addr) { u64* p = (u64*)(g_base + (addr - IMAGE_BASE)); return readable(p, 8) ? *p : 0; }
+static u64 rdp(u64 a) { return readable((void*)a, 8) ? *(u64*)a : 0; }
+static int obj_live(u64 ptr, u64 handleAt)
+{
+    if (!ptr || !readable((void*)handleAt, 4) || !readable((void*)(ptr + 8), 4)) return 0;
+    int h = *(int*)handleAt; DWORD id = *(DWORD*)(ptr + 8);
+    return h != -1 && !(id & 0x40000000) && id == (DWORD)h;
+}
+typedef struct { u64 info, obj; float life, max; int ok, pad, ai; } Fighter;
+static void read_fighter(u64 fg, int p, Fighter* f)
+{
+    memset(f, 0, sizeof(*f)); f->pad = -1;
+    f->info = rdp(fg + 0x1968 + 8 * p);
+    if (!f->info) return;
+    u64 obj = rdp(f->info + 0x20);
+    if (!obj_live(obj, f->info + 0x28) || !readable((void*)(obj + 0xA38), 8)) return;
+    f->obj = obj; f->life = *(float*)(obj + 0xA38); f->max = *(float*)(obj + 0xA3C);
+    f->ok = f->max > 0 && f->life >= 0 && f->life <= f->max * 1.01f;
+    u64 gp = rdp(f->info + 0x50);
+    if (gp && readable((void*)gp, 4)) f->pad = *(int*)gp;
+    f->ai = obj_live(rdp(f->info + 0x2D8), f->info + 0x2E0);
+}
+static int g_hpLevel[2], g_you;
+static u64 g_hpObj[2];
+static int hp_level(float frac) { return (frac <= 0.75f) + (frac <= 0.50f) + (frac <= 0.25f); }
+static void health_tick(DWORD now)
+{
+    static DWORD last;
+    if (!g_base || now - last < 50) return;
+    last = now;
+    u64 fg = game_ptr(GFGGAMEINFO);
+    Fighter f[2];
+    if (!fg) { g_hpObj[0] = g_hpObj[1] = 0; return; }
+    read_fighter(fg, 0, &f[0]); read_fighter(fg, 1, &f[1]);
+    if (!f[0].ok || !f[1].ok) { g_hpObj[0] = g_hpObj[1] = 0; return; }
+    if (f[0].obj != g_hpObj[0] || f[1].obj != g_hpObj[1]) {   /* a new fight: work out who is who, no cue */
+        int local0 = f[0].pad >= 0 && f[0].pad <= 7 && !f[0].ai, local1 = f[1].pad >= 0 && f[1].pad <= 7 && !f[1].ai;
+        g_you = g_side ? g_side - 1 : (local1 && !local0) ? 1 : 0;
+        static wchar line[256]; line[0] = 0;
+        for (int p = 0; p < 2; p++) {
+            wcat(line, p ? (const wchar*)L" | P2 life " : (const wchar*)L"P1 life ", 256); wcat_u(line, (u64)f[p].life, 256);
+            wcat(line, (const wchar*)L"/", 256); wcat_u(line, (u64)f[p].max, 256);
+            wcat(line, (const wchar*)L" pad ", 256); if (f[p].pad < 0) wcat(line, (const wchar*)L"none", 256); else wcat_u(line, (u64)f[p].pad, 256);
+            wcat(line, f[p].ai ? (const wchar*)L" computer" : (const wchar*)L" human", 256);
+        }
+        wcat(line, g_you ? (const wchar*)L" -> you are P2" : (const wchar*)L" -> you are P1", 256);
+        logf3((const wchar*)L"FIGHTERS", 0, line);
+        for (int p = 0; p < 2; p++) { g_hpObj[p] = f[p].obj; g_hpLevel[p] = hp_level(f[p].life / f[p].max); }
+        return;
+    }
+    for (int p = 0; p < 2; p++) {
+        int lv = hp_level(f[p].life / f[p].max);
+        if (lv > g_hpLevel[p] && f[p].life > 0) {
+            int mine = p == g_you;
+            if (mine ? g_healthYou : g_healthOpp) {
+                static const char* names[2][3] = { {"you75", "you50", "you25"}, {"opponent75", "opponent50", "opponent25"} };
+                snd_play(names[mine ? 0 : 1][lv - 1]);
+            }
+            static wchar line[64]; line[0] = 0;
+            wcat(line, mine ? (const wchar*)L"you " : (const wchar*)L"opponent ", 64); wcat_u(line, (u64)(75 - 25 * (lv - 1)), 64);
+            logf3((const wchar*)L"HEALTH", 0, line);
+        }
+        g_hpLevel[p] = lv;   /* goes back up for a new round */
+    }
+}
+
+/* ------------------------------------------------------------------ */
+/* the accessibility menu                                               */
+enum { MI_HEALTH_YOU, MI_HEALTH_OPP, MI_SIDE, MI_VOLUME, MI_DAMAGE, MI_AUTOREAD, MI_TEST, MI_CLOSE, MI_COUNT };
+static int g_menuShown, g_menuItem, g_menuHinted, g_testStep; static DWORD g_testT;
+static void menu_line(int i, wchar* out, int max, int withPos)
+{
+    static const wchar* labels[MI_COUNT] = {
+        (const wchar*)L"Health sounds for you", (const wchar*)L"Health sounds for your opponent", (const wchar*)L"Your character",
+        (const wchar*)L"Sound volume", (const wchar*)L"Combo damage numbers", (const wchar*)L"Auto read",
+        (const wchar*)L"Play the health sounds", (const wchar*)L"Close menu" };
+    wcpy(out, labels[i], max);
+    int* b = i == MI_HEALTH_YOU ? &g_healthYou : i == MI_HEALTH_OPP ? &g_healthOpp : i == MI_DAMAGE ? &g_damageNumbers : i == MI_AUTOREAD ? &g_autoRead : 0;
+    if (b) wcat(out, *b ? (const wchar*)L", on" : (const wchar*)L", off", max);
+    if (i == MI_SIDE) wcat(out, g_side == 1 ? (const wchar*)L", player 1, left side" : g_side == 2 ? (const wchar*)L", player 2, right side" : (const wchar*)L", automatic", max);
+    if (i == MI_VOLUME) { wcat(out, (const wchar*)L", ", max); wcat_u(out, (u64)g_volume, max); wcat(out, (const wchar*)L" percent", max); }
+    if (withPos) { wcat(out, (const wchar*)L", ", max); wcat_u(out, (u64)i + 1, max); wcat(out, (const wchar*)L" of ", max); wcat_u(out, MI_COUNT, max); }
+}
+static void menu_say(int interrupt) { static wchar line[160]; menu_line(g_menuItem, line, 160, 1); speak_force_q(line, interrupt); }
+static void menu_show(void)
+{
+    g_menuOpen = 1; g_menuShown = 1; g_testStep = 0;
+    snd_play("menu_open");
+    static wchar line[400]; line[0] = 0;
+    wcpy(line, (const wchar*)L"Accessibility menu. ", 400);
+    if (!g_menuHinted) { wcat(line, (const wchar*)L"Up and down to choose, left and right to change, B or Escape to close. ", 400); g_menuHinted = 1; }
+    wchar item[160]; menu_line(g_menuItem, item, 160, 1); wcat(line, item, 400);
+    speak_force_q(line, 1);
+    log_w((const wchar*)L"MENU open");
+}
+static void menu_close(void)
+{
+    g_menuShown = 0; g_testStep = 0;
+    settings_save();
+    g_menuOpen = 0;
+    snd_play("menu_close");
+    speak_force_q((const wchar*)L"Menu closed", 1);
+    log_w((const wchar*)L"MENU closed");
+}
+static void menu_move(int d)
+{
+    int n = g_menuItem + d;
+    if (n < 0 || n >= MI_COUNT) { snd_play("menu_edge"); n = (n + MI_COUNT) % MI_COUNT; }   /* wraps around */
+    else snd_play("menu_move");
+    g_menuItem = n; menu_say(1);
+}
+static void menu_change(int d, int activate)
+{
+    int i = g_menuItem;
+    int* b = i == MI_HEALTH_YOU ? &g_healthYou : i == MI_HEALTH_OPP ? &g_healthOpp : i == MI_DAMAGE ? &g_damageNumbers : i == MI_AUTOREAD ? &g_autoRead : 0;
+    if (b) *b = !*b;
+    else if (i == MI_SIDE) { g_side = (g_side + (d < 0 ? 2 : 1)) % 3; if (g_side) g_you = g_side - 1; g_hpObj[0] = 0; }
+    else if (i == MI_VOLUME) {
+        int v = g_volume + (activate ? 10 : 10 * d); if (activate && v > 100) v = 0;
+        g_volume = v < 0 ? 0 : v > 100 ? 100 : v;
+        snd_play("you75");
+    }
+    else if (i == MI_TEST) { if (activate) { g_testStep = 1; g_testT = GetTickCount(); } return; }
+    else if (i == MI_CLOSE) { if (activate) menu_close(); return; }
+    else return;
+    settings_save();
+    menu_say(1);
+}
+static void menu_tick(DWORD now)
+{
+    if (g_menuOpen && !g_menuShown) menu_show();          /* opened from the controller */
+    if (!g_testStep || now - g_testT < (g_testStep == 1 ? 0u : 1500u)) return;
+    static const char* names[6] = {"you75", "you50", "you25", "opponent75", "opponent50", "opponent25"};
+    static const wchar* says[6] = { (const wchar*)L"You at 75 percent", (const wchar*)L"You at 50 percent", (const wchar*)L"You at 25 percent",
+        (const wchar*)L"Opponent at 75 percent", (const wchar*)L"Opponent at 50 percent", (const wchar*)L"Opponent at 25 percent" };
+    int k = g_testStep - 1;
+    speak_force_q(says[k], 1); snd_play(names[k]);
+    g_testT = now; g_testStep = k + 2 > 6 ? 0 : k + 2;
+}
+static void menu_pad(int x)
+{
+    if (!g_menuShown) return;   /* the opening press itself */
+    if ((x & PAD_START) && (x & PAD_BACK)) { menu_close(); return; }
+    if (x & PAD_B) { menu_close(); return; }
+    if (x & PAD_UP) menu_move(-1);
+    if (x & PAD_DOWN) menu_move(1);
+    if (x & PAD_LEFT) menu_change(-1, 0);
+    if (x & PAD_RIGHT) menu_change(1, 0);
+    if (x & (PAD_A | PAD_START)) menu_change(1, 1);
+}
+
 /* ------------------------------------------------------------------ */
 /* hotkeys                                                             */
 static int game_in_front(void)
@@ -1754,7 +2070,19 @@ static void poll_keys(void)
 {
     int front = game_in_front();
     int f5 = pressed(0x74), f6 = pressed(0x75), f7 = pressed(0x76), f8 = pressed(0x77), f9 = pressed(0x78), f10 = pressed(0x79), f11 = pressed(0x7A);
+    int f3 = pressed(0x72), up = pressed(0x26), dn = pressed(0x28), lf = pressed(0x25), rt = pressed(0x27), ent = pressed(0x0D), esc = pressed(0x1B), sp = pressed(0x20);
     if (!front) return;
+    if (g_menuShown) {   /* the menu has the keyboard (the game gets no key presses meanwhile) */
+        if (f3 || esc) { menu_close(); return; }
+        if (up) menu_move(-1);
+        if (dn) menu_move(1);
+        if (lf) menu_change(-1, 0);
+        if (rt) menu_change(1, 0);
+        if (ent || sp) menu_change(1, 1);
+        if (f5) { static wchar again[2048]; wcpy(again, g_last, 2048); speak_force_q(again, 1); }
+        return;
+    }
+    if (f3) { g_menuOpen = 1; menu_show(); return; }
     if (f11) steam_invite_key((GetAsyncKeyState(0x10) & 0x8000) != 0, (GetAsyncKeyState(0x11) & 0x8000) != 0);
     if (f10) { g_damageNumbers = !g_damageNumbers; speak_force(g_damageNumbers ? (const wchar*)L"Damage numbers on" : (const wchar*)L"Damage numbers off"); }
     if (f9) speak_force((const wchar*)(L"MKX Access version " VERSION));
@@ -1806,6 +2134,7 @@ static DWORD WINAPI worker(void* arg)
         g_nvOk = nv_test && nv_test() == 0;
         log_w(g_nvOk ? (const wchar*)L"NVDA is running" : (const wchar*)L"NVDA not detected yet");
     } else log_w((const wchar*)L"nvdaControllerClient64.dll not found - speech disabled, logging only");
+    settings_load();
 
     int okCount = 0; for (int i = 0; i < NHOOKS; i++) if (g_hookOk[i] == 1) okCount++;
     const wchar* hello = okCount == NHOOKS ? (const wchar*)(L"MKX Access " VERSION L" loaded") :
@@ -1827,6 +2156,7 @@ static DWORD WINAPI worker(void* arg)
             else if (ev.type == EV_COMBOEND) combo_finished(&ev);
             else if (ev.type == EV_INVITE) steam_invite_requested(&ev);
             else if (ev.type == EV_LOBBYINVITE) steam_invite_received(&ev);
+            else if (ev.type == EV_MENUPAD) menu_pad(ev.x);
             else if (ev.type == EV_PAD && (ev.x & PAD_BACK)) steam_accept_invite();
             else if (ev.type == EV_PAD) {
                 if (ev.x & PAD_DOWN) steam_invite_key(0, 0);
@@ -1852,6 +2182,8 @@ static DWORD WINAPI worker(void* arg)
         steam_invite_tick(now);
         if (g_cbRegistered == 2) { log_w((const wchar*)L"STEAM listening for invites (LobbyInvite_t)"); g_cbRegistered = 3; }
         poll_keys();
+        menu_tick(now);
+        health_tick(now);
         /* no forced disk flush: written lines are in Windows' file cache right away
            (readable by anyone, kept if the game crashes); forcing them onto the disk
            every 2 seconds only made extra disk work */
