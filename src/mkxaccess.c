@@ -14,7 +14,7 @@
    Everything is also written to MKXAccess.log next to the game exe. */
 #include "win.h"
 
-#define VERSION L"0.9.3"
+#define VERSION L"0.9.4"
 #define FOCUS_DELAY 70   /* ms to wait after focus moves, for descriptions to arrive */
 #define IMAGE_BASE 0x140000000ULL
 
@@ -44,7 +44,7 @@ static gotoLabel_t   o_gotoAndPlay, o_gotoAndStop;
 
 /* ------------------------------------------------------------------ */
 /* event queue: game thread -> worker thread                           */
-enum { EV_TEXT = 1, EV_HTML, EV_VTEXT, EV_VHTML, EV_FOCUS, EV_SETFOCUS, EV_GRID, EV_ANIM, EV_LABEL, EV_COMBOEND, EV_INVITE, EV_PAD, EV_LOBBYINVITE, EV_MENUPAD };
+enum { EV_TEXT = 1, EV_HTML, EV_VTEXT, EV_VHTML, EV_FOCUS, EV_SETFOCUS, EV_GRID, EV_ANIM, EV_LABEL, EV_COMBOEND, EV_INVITE, EV_PAD, EV_LOBBYINVITE, EV_MENUPAD, EV_METERFULL };
 #define PATHMAX 192
 #define TEXTMAX 512
 typedef struct { int type; u64 id; DWORD t; int x, y; wchar path[PATHMAX]; wchar text[TEXTMAX]; } Event;
@@ -337,6 +337,20 @@ static void hk_kbd(void* self, void* dev, WORD key, BYTE down)
     o_kbd(self, dev, key, down);
 }
 
+/* PLAYER_INFO::SetSuperMeter(this, float): every meter gain goes through it. The computer
+   can fire its X-ray in the same moment its meter fills, too fast for the 50 ms check,
+   so the moment the meter reaches full is caught here and told to the worker. */
+typedef void (*setMeter_t)(void*, float);
+static setMeter_t o_setMeter;
+static void hk_setMeter(void* self, float v)
+{
+    if (!self || !readable((BYTE*)self + 0x28C, 4)) { o_setMeter(self, v); return; }
+    float before = *(float*)((BYTE*)self + 0x28C);
+    o_setMeter(self, v);
+    float after = *(float*)((BYTE*)self + 0x28C);
+    if (before < 0.999f && after >= 0.999f) { Event* e = q_begin(); if (e) { e->type = EV_METERFULL; e->id = (u64)self; q_end(); } }
+}
+
 static HookDef g_hooks[] = {
     { "UIElement::gotoAndPlay",        0x140C36B20, 7, {0x48,0x83,0xEC,0x28,0x4C,0x8B,0xC2}, hk_gotoAndPlay,    (void**)&o_gotoAndPlay },
     { "UIElement::gotoAndStop",        0x140C36BA0, 7, {0x48,0x83,0xEC,0x28,0x4C,0x8B,0xC2}, hk_gotoAndStop,    (void**)&o_gotoAndStop },
@@ -349,6 +363,7 @@ static HookDef g_hooks[] = {
     { "UIElement::setFocus",           0x140C37B30, 5, {0x48,0x89,0x5C,0x24,0x08},           hk_setFocus,       (void**)&o_setFocus },
     { "UIGridSelectWidget::DrawCellGainFocus",0x1405B7550,6,{0x40,0x53,0x48,0x83,0xEC,0x20}, hk_drawCell,       (void**)&o_drawCell },
     { "PCInput::HandleKeyboardInput",  0x140813550, 5, {0x48,0x89,0x5C,0x24,0x08},           hk_kbd,            (void**)&o_kbd },
+    { "PLAYER_INFO::SetSuperMeter",    0x14055EC40, 6, {0x40,0x53,0x48,0x83,0xEC,0x40},      hk_setMeter,       (void**)&o_setMeter },
 };
 #define NHOOKS (int)(sizeof(g_hooks)/sizeof(g_hooks[0]))
 static int g_hookOk[NHOOKS];
@@ -1960,6 +1975,23 @@ static void read_fighter(u64 fg, int p, Fighter* f)
 static int g_hpLevel[2], g_you, g_xrayReady[2]; static float g_hpLife[2];
 static u64 g_hpObj[2];
 static int hp_level(float frac) { return (frac <= 0.75f) + (frac <= 0.50f) + (frac <= 0.25f); }
+static DWORD g_xrayT[2];
+static void xray_ready(int p, const wchar* how)
+{
+    g_xrayReady[p] = 1; g_xrayT[p] = GetTickCount();
+    int mine = p == g_you;
+    if (mine ? g_xrayYou : g_xrayOpp) snd_play_pan(mine ? "xray_you" : "xray_opponent", g_stereo ? (p ? 1 : -1) : 0);
+    static wchar line[64]; wcpy(line, mine ? (const wchar*)L"you ready" : (const wchar*)L"opponent ready", 64); wcat(line, how, 64);
+    logf3((const wchar*)L"XRAY", 0, line);
+}
+/* from hk_setMeter: a fighter's meter reached full */
+static void meter_full(u64 info)
+{
+    if (!g_hpObj[0]) return;   /* not in a fight we know yet */
+    u64 fg = game_ptr(GFGGAMEINFO);
+    for (int p = 0; p < 2; p++)
+        if (fg && rdp(fg + 0x1968 + 8 * p) == info && !g_xrayReady[p]) xray_ready(p, (const wchar*)L" (meter hook)");
+}
 static void health_tick(DWORD now)
 {
     static DWORD last;
@@ -1991,13 +2023,8 @@ static void health_tick(DWORD now)
     for (int p = 0; p < 2; p++) {   /* X-ray ready: the meter just filled */
         float m = f[p].meter;
         if (m < 0 || m > 1.01f) continue;
-        if (!g_xrayReady[p] && m >= 0.999f) {
-            g_xrayReady[p] = 1;
-            int mine = p == g_you;
-            if (mine ? g_xrayYou : g_xrayOpp) snd_play_pan(mine ? "xray_you" : "xray_opponent", g_stereo ? (p ? 1 : -1) : 0);
-            logf3((const wchar*)L"XRAY", 0, mine ? (const wchar*)L"you ready" : (const wchar*)L"opponent ready");
-        }
-        else if (g_xrayReady[p] && m < 0.98f) g_xrayReady[p] = 0;   /* used it (or lost meter): ready to tell again */
+        if (!g_xrayReady[p] && m >= 0.999f) xray_ready(p, (const wchar*)L"");
+        else if (g_xrayReady[p] && m < 0.98f && now - g_xrayT[p] > 300) g_xrayReady[p] = 0;   /* used it (or lost meter): ready to tell again */
     }
     for (int p = 0; p < 2; p++) {
         if (f[p].life < g_hpLife[p]) g_lifeDropT = now;
@@ -2218,6 +2245,7 @@ static DWORD WINAPI worker(void* arg)
             else if (ev.type == EV_INVITE) steam_invite_requested(&ev);
             else if (ev.type == EV_LOBBYINVITE) steam_invite_received(&ev);
             else if (ev.type == EV_MENUPAD) menu_pad(ev.x);
+            else if (ev.type == EV_METERFULL) meter_full(ev.id);
             else if (ev.type == EV_PAD && (ev.x & PAD_BACK)) steam_accept_invite();
             else if (ev.type == EV_PAD) {
                 if (ev.x & PAD_DOWN) steam_invite_key(0, 0);
