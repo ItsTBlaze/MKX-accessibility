@@ -14,7 +14,7 @@
    Everything is also written to MKXAccess.log next to the game exe. */
 #include "win.h"
 
-#define VERSION L"0.9.11"
+#define VERSION L"0.9.12"
 #define FOCUS_DELAY 70   /* ms to wait after focus moves, for descriptions to arrive */
 #define IMAGE_BASE 0x140000000ULL
 
@@ -742,6 +742,11 @@ static int g_comboReadout = 1;    /* Ctrl+F10: read hits and combos at all */
 static wchar g_hitDmg[32], g_hitLevel[32]; static int g_hitCell = -1; static DWORD g_hitT; static int g_hitPending;
 typedef struct { wchar hits[16], dmg[32]; DWORD t, start; int dirty, ended, gotHits; } Combo;
 static DWORD g_lifeDropT; static int g_lifeKnown;   /* last time a fighter lost health (health_tick) */
+/* the wall hum is kept quiet while the fight isn't being played: 1 = a game menu is up
+   (pause, results; menus only appear then), 2 = a round or the match is won. Ends when the
+   round timer ticks again, a new fight starts, or (1 only, for fights without a timer)
+   when a fighter moves. */
+static int g_wallQuiet, g_quietPosSet;
 static Combo g_combo[2];
 static wchar g_seq[256]; static int g_seqN; static DWORD g_seqT;   /* "high, mid, mid" */
 #define HIT_WAIT 900     /* ms: a second hit within this turns the first into a combo (launchers take ~850) */
@@ -976,6 +981,8 @@ static void handle_text(Event* ev)
 {
     wchar clean[TEXTMAX];
     clean_text(ev->text, clean, TEXTMAX);
+    if (contains_ci(ev->path, "roundTimer.timer")) g_wallQuiet = 0;   /* the fight is on */
+    else if ((contains_ci(ev->path, "endUI.wins") || contains_ci(ev->path, "centerText")) && contains_ci(clean, " WINS")) g_wallQuiet = 2;
     const wchar* tag = ev->type == EV_TEXT ? (const wchar*)L"TEXT" : ev->type == EV_HTML ? (const wchar*)L"HTML" :
                        ev->type == EV_VTEXT ? (const wchar*)L"VTEXT" : (const wchar*)L"VHTML";
     u64 key = ev->path[0] ? hash_path(ev->path) : (ev->id & ~1ULL);
@@ -1513,6 +1520,7 @@ static void read_screen(void)
 
 static void handle_focus(Event* ev)
 {
+    if (g_wallQuiet != 2) { g_wallQuiet = 1; g_quietPosSet = 0; }
     if (g_padMode) { g_padMode = 0; log_w((const wchar*)L"INVITE controller mode off"); }   /* back in a menu */
     const wchar* tag = ev->type == EV_FOCUS ? (const wchar*)L"FOCUS" : ev->type == EV_SETFOCUS ? (const wchar*)L"SETFOCUS" :
                       ev->type == EV_ANIM ? (const wchar*)L"ANIMFOCUS" : (const wchar*)L"GRID";
@@ -2182,13 +2190,20 @@ static void health_tick(DWORD now)
         g_combo[0].dirty = g_combo[1].dirty = 0;   /* nothing from the last fight carries over */
         for (int p = 0; p < 2; p++) g_xrayReady[p] = f[p].meter >= 0.999f;   /* known from the start: no sound */
         g_wallZone[0] = g_wallZone[1] = 0;
-        g_lifeKnown = 1;
+        g_lifeKnown = 1; g_wallQuiet = 0;
         return;
     }
     {   /* walls; and while testing, where everybody stands once a second */
         float len = *(float*)(g_base + (0x1430CFD5CULL - IMAGE_BASE));
         g_humVol = 0;
         for (int p = 0; p < 2; p++) wall_tick(&f[p], p, len, now);
+        if (f[0].life <= 0 || f[1].life <= 0) g_humVol = 0;   /* knocked out: the round is over */
+        if (g_wallQuiet == 1) {   /* a menu: quiet until somebody moves (fights without a timer) */
+            static float qx[2];
+            if (!g_quietPosSet) { qx[0] = f[0].x; qx[1] = f[1].x; g_quietPosSet = 1; }
+            else if (qx[0] - f[0].x > 10 || f[0].x - qx[0] > 10 || qx[1] - f[1].x > 10 || f[1].x - qx[1] > 10) g_wallQuiet = 0;
+        }
+        if (g_wallQuiet) g_humVol = 0;
         if (!g_menuOpen) snd_loop(0, "wall_loop", g_cv[C_HUM] > 0 ? g_humVol * g_cv[C_HUM] / 100 : 0, g_humPan);   /* the menu uses it for its preview */
         static DWORD lastPos;
         if (now - lastPos >= 1000 && f[0].hasX && f[1].hasX) {
