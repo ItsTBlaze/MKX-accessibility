@@ -14,7 +14,7 @@
    Everything is also written to MKXAccess.log next to the game exe. */
 #include "win.h"
 
-#define VERSION L"0.9.5"
+#define VERSION L"0.9.6"
 #define FOCUS_DELAY 70   /* ms to wait after focus moves, for descriptions to arrive */
 #define IMAGE_BASE 0x140000000ULL
 
@@ -1807,11 +1807,11 @@ static void speak_force_q(const wchar* s, int interrupt)
    file just stays silent. Played with Windows' PlaySound from memory, one at a time. */
 typedef int (WINAPI *PlaySoundW_t)(const void*, HMODULE, DWORD);
 static PlaySoundW_t p_PlaySound;
-typedef struct { const char* name; int tried; BYTE* raw; DWORD len; BYTE* play; DWORD playLen; int playVol, playPan; DWORD dataOff, dataLen; int pcm16, chans, rate; } Sound;
+typedef struct { const char* name; int tried; BYTE* raw; DWORD len; DWORD dataOff, dataLen; int pcm16, chans, rate; } Sound;
 static Sound g_snd[] = {
     {"you75"}, {"you50"}, {"you25"}, {"opponent75"}, {"opponent50"}, {"opponent25"},
     {"menu_open"}, {"menu_close"}, {"menu_move"}, {"menu_edge"}, {"xray_you"}, {"xray_opponent"},
-    {"wall_near_you"}, {"wall_near_opponent"}, {"corner_you"}, {"corner_opponent"},
+    {"wall_loop_you"}, {"wall_loop_opponent"}, {"corner_you"}, {"corner_opponent"},
 };
 #define NSND (int)(sizeof(g_snd) / sizeof(g_snd[0]))
 static int g_volume = 80;   /* percent */
@@ -1840,53 +1840,142 @@ static void snd_load(Sound* s)
         if (id == 0x20746D66 /* fmt  */ && sz >= 16 && o + 24 <= s->len) {
             s->chans = s->raw[o + 10] | (s->raw[o + 11] << 8);
             s->rate = (int)rd32(s->raw + o + 12);
-            s->pcm16 = (s->raw[o + 8] | (s->raw[o + 9] << 8)) == 1 && (s->raw[o + 22] | (s->raw[o + 23] << 8)) == 16 && (s->chans == 1 || s->chans == 2);
+            s->pcm16 = (s->raw[o + 8] | (s->raw[o + 9] << 8)) == 1 && (s->raw[o + 22] | (s->raw[o + 23] << 8)) == 16 && (s->chans == 1 || s->chans == 2) && s->rate >= 4000 && s->rate <= 192000;
         }
         if (id == 0x61746164 /* data */) { s->dataOff = o + 8; s->dataLen = sz; if (s->dataOff + s->dataLen > s->len) s->dataLen = s->len - s->dataOff; }
         o += 8 + sz + (sz & 1);
     }
-    if (s->pcm16 && s->dataLen) {   /* room for a stereo copy: header + 4 bytes a frame */
-        DWORD frames = s->dataLen / (2 * s->chans);
-        s->playLen = 44 + frames * 4;
-        s->play = (BYTE*)VirtualAlloc(0, s->playLen, MEM_COMMIT | MEM_RESERVE, 0x04);
-        if (!s->play) s->pcm16 = 0;
-    }
-    s->playVol = -1;
 }
-/* pan: -1 left, 0 middle, 1 right. A 16-bit sound is turned into a stereo copy at the
-   menu volume, loud on its side and soft on the other so it still sounds natural. */
+/* the mixer: one stereo 44.1 kHz stream (waveOut) on its own thread, so sounds can
+   overlap and a steady sound can change its volume while it plays. 16-bit .wav files of
+   any rate, mono or stereo, go through it; anything else falls back to PlaySound. */
+typedef struct { char* data; DWORD len, rec; u64 user; DWORD flags, loops; void* next; u64 res; } WaveHdr;
+typedef UINT (WINAPI *wOpen_t)(void**, UINT, const void*, u64, u64, DWORD);
+typedef UINT (WINAPI *wHdr_t)(void*, WaveHdr*, UINT);
+static wHdr_t p_wPrepare, p_wWrite;
+static void* g_wave; static HANDLE g_waveEvent; static CRITICAL_SECTION g_mixLock; static int g_mixOk;
+#define MIX_RATE 44100
+#define MIX_FRAMES 1024          /* 23 ms a buffer, 4 buffers */
+typedef struct { Sound* s; u64 pos, step; int gl, gr; } Voice;   /* gains in 1/256 */
+static Voice g_voice[12];
+typedef struct { Sound* s; u64 pos, step; float vol, target; int pan; } Loop;   /* steady sounds */
+static Loop g_loop[2];
+static short g_mixBuf[4][MIX_FRAMES * 2]; static WaveHdr g_hdr[4];
+static int sample_at(Sound* s, u64 pos, int ch)   /* pos: 32.32 frames */
+{
+    DWORD frames = s->dataLen / (2 * s->chans), i = (DWORD)(pos >> 32);
+    if (i >= frames) return 0;
+    const short* d = (const short*)(s->raw + s->dataOff);
+    return d[i * s->chans + (s->chans == 2 ? ch : 0)];
+}
+static void mix_fill(short* out)
+{
+    static int acc[MIX_FRAMES * 2];
+    memset(acc, 0, sizeof(acc));
+    EnterCriticalSection(&g_mixLock);
+    int master = g_muted ? 0 : g_volume * 256 / 100;
+    for (int v = 0; v < 12; v++) {
+        Voice* x = &g_voice[v]; if (!x->s) continue;
+        DWORD frames = x->s->dataLen / (2 * x->s->chans);
+        for (int i = 0; i < MIX_FRAMES; i++) {
+            if ((x->pos >> 32) >= frames) { x->s = 0; break; }
+            int l = sample_at(x->s, x->pos, 0), r = x->s->chans == 2 ? sample_at(x->s, x->pos, 1) : l;
+            if (x->s->chans == 2 && x->gl != x->gr) l = r = (l + r) / 2;   /* placed: one voice */
+            acc[i * 2] += l * x->gl >> 8; acc[i * 2 + 1] += r * x->gr >> 8;
+            x->pos += x->step;
+        }
+    }
+    for (int k = 0; k < 2; k++) {
+        Loop* x = &g_loop[k]; if (!x->s) continue;
+        DWORD frames = x->s->dataLen / (2 * x->s->chans);
+        if (!frames) continue;
+        float step = (x->target - x->vol) / MIX_FRAMES;   /* glide to the new volume: no clicks */
+        for (int i = 0; i < MIX_FRAMES; i++) {
+            x->vol += step;
+            if ((x->pos >> 32) >= frames) x->pos -= (u64)frames << 32;
+            int m = sample_at(x->s, x->pos, 0);
+            if (x->s->chans == 2) m = (m + sample_at(x->s, x->pos, 1)) / 2;
+            float g = x->vol, gl = x->pan < 0 ? g : x->pan > 0 ? g * 0.18f : g * 0.85f, gr = x->pan > 0 ? g : x->pan < 0 ? g * 0.18f : g * 0.85f;
+            acc[i * 2] += (int)(m * gl); acc[i * 2 + 1] += (int)(m * gr);
+            x->pos += x->step;
+        }
+        x->vol = x->target;
+    }
+    LeaveCriticalSection(&g_mixLock);
+    for (int i = 0; i < MIX_FRAMES * 2; i++) {
+        int v = acc[i] * master >> 8;
+        out[i] = (short)(v > 32767 ? 32767 : v < -32768 ? -32768 : v);
+    }
+}
+static DWORD WINAPI mix_thread(void* arg)
+{
+    for (int b = 0; b < 4; b++) {
+        g_hdr[b].data = (char*)g_mixBuf[b]; g_hdr[b].len = sizeof(g_mixBuf[b]);
+        mix_fill(g_mixBuf[b]);
+        p_wPrepare(g_wave, &g_hdr[b], sizeof(WaveHdr)); p_wWrite(g_wave, &g_hdr[b], sizeof(WaveHdr));
+    }
+    for (;;) {
+        WaitForSingleObject(g_waveEvent, 100);
+        for (int b = 0; b < 4; b++)
+            if (g_hdr[b].flags & 1 /* WHDR_DONE */) { g_hdr[b].flags &= ~1u; mix_fill(g_mixBuf[b]); p_wWrite(g_wave, &g_hdr[b], sizeof(WaveHdr)); }
+    }
+    return 0;
+}
+static void mix_start(void)
+{
+    static int tried; if (tried) return; tried = 1;
+    HMODULE w = LoadLibraryW((const wchar*)L"winmm.dll");
+    if (!w) return;
+    p_PlaySound = (PlaySoundW_t)GetProcAddress(w, "PlaySoundW");
+    wOpen_t open = (wOpen_t)GetProcAddress(w, "waveOutOpen");
+    p_wPrepare = (wHdr_t)GetProcAddress(w, "waveOutPrepareHeader"); p_wWrite = (wHdr_t)GetProcAddress(w, "waveOutWrite");
+    if (!open || !p_wPrepare || !p_wWrite) return;
+    InitializeCriticalSection(&g_mixLock);
+    g_waveEvent = CreateEventW(0, 0, 0, 0);
+    BYTE fmt[18] = {0};
+    wr16(fmt, 1); wr16(fmt + 2, 2); wr32(fmt + 4, MIX_RATE); wr32(fmt + 8, MIX_RATE * 4); wr16(fmt + 12, 4); wr16(fmt + 14, 16);
+    if (open(&g_wave, 0xFFFFFFFF /* WAVE_MAPPER */, fmt, (u64)g_waveEvent, 0, 0x50000 /* CALLBACK_EVENT */) != 0) { log_w((const wchar*)L"SOUND waveOut failed - one sound at a time"); return; }
+    g_mixOk = 1;
+    CreateThread(0, 0, mix_thread, 0, 0, 0);
+    log_w((const wchar*)L"SOUND mixer started");
+}
+static Sound* snd_get(const char* name)
+{
+    for (int i = 0; i < NSND; i++) {
+        const char* a = g_snd[i].name; int k = 0; while (a[k] && a[k] == name[k]) k++;
+        if (!a[k] && !name[k]) { if (!g_snd[i].tried) snd_load(&g_snd[i]); return g_snd[i].len ? &g_snd[i] : 0; }
+    }
+    return 0;
+}
+/* pan: -1 left, 0 middle, 1 right: loud on its side and soft on the other, so it still
+   sounds natural */
 static void snd_play_pan(const char* name, int pan)
 {
     if (g_muted || !g_base) return;
-    if (!p_PlaySound) {
-        HMODULE w = LoadLibraryW((const wchar*)L"winmm.dll");
-        p_PlaySound = w ? (PlaySoundW_t)GetProcAddress(w, "PlaySoundW") : 0;
-        if (!p_PlaySound) return;
-    }
-    Sound* s = 0;
-    for (int i = 0; i < NSND; i++) { const char* a = g_snd[i].name; int k = 0; while (a[k] && a[k] == name[k]) k++; if (!a[k] && !name[k]) s = &g_snd[i]; }
-    if (!s) return;
-    if (!s->tried) snd_load(s);
-    if (!s->len || g_volume <= 0) return;
-    if (!s->pcm16) { p_PlaySound(s->raw, 0, 0x0001 | 0x0002 | 0x0004); return; }   /* as it is */
-    if (s->playVol != g_volume || s->playPan != pan) {
-        p_PlaySound(0, 0, 0);   /* nothing may play from the buffer while it is rewritten */
-        BYTE* h = s->play; DWORD frames = (s->playLen - 44) / 4;
-        wr32(h, 0x46464952); wr32(h + 4, s->playLen - 8); wr32(h + 8, 0x45564157);
-        wr32(h + 12, 0x20746D66); wr32(h + 16, 16); wr16(h + 20, 1); wr16(h + 22, 2);
-        wr32(h + 24, (unsigned)s->rate); wr32(h + 28, (unsigned)s->rate * 4); wr16(h + 32, 4); wr16(h + 34, 16);
-        wr32(h + 36, 0x61746164); wr32(h + 40, frames * 4);
-        int gl = pan < 0 ? 100 : pan > 0 ? 18 : 85, gr = pan > 0 ? 100 : pan < 0 ? 18 : 85;   /* percent per ear */
-        const short* src = (const short*)(s->raw + s->dataOff); short* dst = (short*)(h + 44);
-        for (DWORD i = 0; i < frames; i++) {
-            int l = src[i * s->chans], r = s->chans == 2 ? src[i * 2 + 1] : l;
-            if (s->chans == 2 && pan) l = r = (l + r) / 2;   /* a stereo file is folded to one voice before placing it */
-            dst[i * 2] = (short)(l * g_volume / 100 * gl / 100);
-            dst[i * 2 + 1] = (short)(r * g_volume / 100 * gr / 100);
-        }
-        s->playVol = g_volume; s->playPan = pan;
-    }
-    p_PlaySound(s->play, 0, 0x0001 | 0x0002 | 0x0004);   /* SND_ASYNC | SND_NODEFAULT | SND_MEMORY */
+    mix_start();
+    Sound* s = snd_get(name);
+    if (!s || g_volume <= 0) return;
+    if (!g_mixOk || !s->pcm16) { if (p_PlaySound) p_PlaySound(s->raw, 0, 0x0001 | 0x0002 | 0x0004); return; }
+    int gl = pan < 0 ? 256 : pan > 0 ? 46 : 218, gr = pan > 0 ? 256 : pan < 0 ? 46 : 218;
+    EnterCriticalSection(&g_mixLock);
+    int slot = 0; for (int v = 0; v < 12; v++) if (!g_voice[v].s) { slot = v; break; } else if (g_voice[v].pos > g_voice[slot].pos) slot = v;   /* else replace the oldest */
+    g_voice[slot].s = s; g_voice[slot].pos = 0; g_voice[slot].step = ((u64)s->rate << 32) / MIX_RATE; g_voice[slot].gl = gl; g_voice[slot].gr = gr;
+    LeaveCriticalSection(&g_mixLock);
+}
+/* a steady sound for slot k (0/1): volume 0..1 (0 stops it after a short fade), pan */
+static void snd_loop(int k, const char* name, float vol, int pan)
+{
+    if (!g_base) return;
+    mix_start();
+    if (!g_mixOk) return;
+    Sound* s = vol > 0 ? snd_get(name) : g_loop[k].s;
+    if (vol > 0 && (!s || !s->pcm16)) return;
+    EnterCriticalSection(&g_mixLock);
+    Loop* x = &g_loop[k];
+    if (vol > 0 && x->s != s) { x->s = s; x->pos = 0; x->vol = 0; x->step = ((u64)s->rate << 32) / MIX_RATE; }
+    x->target = vol; x->pan = pan;
+    if (vol <= 0 && x->vol <= 0.001f) x->s = 0;
+    LeaveCriticalSection(&g_mixLock);
 }
 static void snd_play(const char* name) { snd_play_pan(name, 0); }
 
@@ -2006,27 +2095,29 @@ static void meter_full(u64 info)
     for (int p = 0; p < 2; p++)
         if (fg && rdp(fg + 0x1968 + 8 * p) == info && !g_xrayReady[p]) xray_ready(p, (const wchar*)L" (meter hook)");
 }
-/* walls: a sound when a fighter gets close to a wall, and another when they reach it
-   (in the corner). Each plays from that wall's side. */
+/* walls: a steady sound from that wall's side while a fighter is close to a wall,
+   getting louder the closer they get, and a slam when they reach the corner. */
 static int g_wallZone[2], g_wallSide[2];
-#define WALL_NEAR 0.15f     /* of the stage length: getting close */
-#define WALL_AT 0.05f       /* in the corner (fighters can't stand right on the wall line; to be tuned from POS lines) */
-#define WALL_BACK 0.03f     /* has to move this much further out before it can sound again */
+#define WALL_NEAR 0.15f     /* of the stage length: the steady sound starts */
+#define WALL_AT 0.05f       /* in the corner (checked against the log: sounds right) */
+#define WALL_BACK 0.03f     /* has to move this much further out before the slam can sound again */
+static void walls_quiet(void) { snd_loop(0, "", 0, 0); snd_loop(1, "", 0, 0); }
 static void wall_tick(Fighter* f, int p, float len, DWORD now)
 {
-    if (!f->hasX || len < 100) return;
+    if (!f->hasX || len < 100) { snd_loop(p, "", 0, 0); return; }
     float left = f->x, right = len - f->x;
     int side = left <= right ? 0 : 1;            /* 0 left wall, 1 right wall */
     float dist = (side ? right : left) / len;     /* 0 at the wall, 0.5 mid stage */
+    if (dist < 0) dist = 0;
+    int mine = p == g_you, on = mine ? g_wallYou : g_wallOpp;
+    /* the steady sound: quiet as it starts, full volume in the corner */
+    float vol = dist < WALL_NEAR ? 0.12f + 0.88f * (1 - dist / WALL_NEAR) : 0;
+    snd_loop(p, mine ? "wall_loop_you" : "wall_loop_opponent", on ? vol : 0, side ? 1 : -1);
     int zone = dist <= WALL_AT ? 2 : dist <= WALL_NEAR ? 1 : 0;
     int cur = g_wallZone[p];
     if (zone > cur) {
         g_wallZone[p] = zone; g_wallSide[p] = side;
-        int mine = p == g_you;
-        if (mine ? g_wallYou : g_wallOpp) {
-            const char* n = zone == 2 ? (mine ? "corner_you" : "corner_opponent") : (mine ? "wall_near_you" : "wall_near_opponent");
-            snd_play_pan(n, side ? 1 : -1);
-        }
+        if (zone == 2 && on) snd_play_pan(mine ? "corner_you" : "corner_opponent", side ? 1 : -1);
         static wchar line[96]; line[0] = 0;
         wcat(line, mine ? (const wchar*)L"you " : (const wchar*)L"opponent ", 96);
         wcat(line, zone == 2 ? (const wchar*)L"in the corner " : (const wchar*)L"near the wall ", 96);
@@ -2046,9 +2137,9 @@ static void health_tick(DWORD now)
     last = now;
     u64 fg = game_ptr(GFGGAMEINFO);
     Fighter f[2];
-    if (!fg) { g_hpObj[0] = g_hpObj[1] = 0; return; }
+    if (!fg) { g_hpObj[0] = g_hpObj[1] = 0; walls_quiet(); return; }
     read_fighter(fg, 0, &f[0]); read_fighter(fg, 1, &f[1]);
-    if (!f[0].ok || !f[1].ok) { g_hpObj[0] = g_hpObj[1] = 0; return; }
+    if (!f[0].ok || !f[1].ok) { g_hpObj[0] = g_hpObj[1] = 0; walls_quiet(); return; }
     if (f[0].obj != g_hpObj[0] || f[1].obj != g_hpObj[1]) {   /* a new fight: work out who is who, no cue */
         int local0 = f[0].pad >= 0 && f[0].pad <= 7 && !f[0].ai, local1 = f[1].pad >= 0 && f[1].pad <= 7 && !f[1].ai;
         g_you = g_side ? g_side - 1 : (local1 && !local0) ? 1 : 0;
@@ -2109,6 +2200,7 @@ static void health_tick(DWORD now)
 /* the accessibility menu                                               */
 enum { MI_HEALTH_YOU, MI_HEALTH_OPP, MI_XRAY_YOU, MI_XRAY_OPP, MI_WALL_YOU, MI_WALL_OPP, MI_STEREO, MI_SIDE, MI_VOLUME, MI_COMBO, MI_DAMAGE, MI_AUTOREAD, MI_TEST, MI_CLOSE, MI_COUNT };
 static int g_menuShown, g_menuItem, g_menuHinted, g_testStep; static DWORD g_testT;
+static const char* g_rampName; static int g_rampPan; static DWORD g_rampT;
 static void menu_line(int i, wchar* out, int max, int withPos)
 {
     static const wchar* labels[MI_COUNT] = {
@@ -2173,16 +2265,23 @@ static void menu_change(int d, int activate)
 static void menu_tick(DWORD now)
 {
     if (g_menuOpen && !g_menuShown) menu_show();          /* opened from the controller */
+    if (g_rampName) {   /* the wall sound preview: from quiet to full over 1.4 seconds */
+        DWORD e = now - g_rampT;
+        if (e < 1400 && g_testStep) snd_loop(0, g_rampName, 0.12f + 0.88f * e / 1400, g_rampPan);
+        else { snd_loop(0, g_rampName, 0, g_rampPan); g_rampName = 0; }
+    }
     if (!g_testStep || now - g_testT < (g_testStep == 1 ? 0u : 1500u)) return;
-    static const char* names[12] = {"you75", "you50", "you25", "xray_you", "wall_near_you", "corner_you",
-        "opponent75", "opponent50", "opponent25", "xray_opponent", "wall_near_opponent", "corner_opponent"};
+    static const char* names[12] = {"you75", "you50", "you25", "xray_you", "wall_loop_you", "corner_you",
+        "opponent75", "opponent50", "opponent25", "xray_opponent", "wall_loop_opponent", "corner_opponent"};
     static const wchar* says[12] = { (const wchar*)L"You at 75 percent", (const wchar*)L"You at 50 percent", (const wchar*)L"You at 25 percent",
-        (const wchar*)L"Your X-ray is ready", (const wchar*)L"You near a wall", (const wchar*)L"You in the corner",
+        (const wchar*)L"Your X-ray is ready", (const wchar*)L"You getting close to a wall", (const wchar*)L"You in the corner",
         (const wchar*)L"Opponent at 75 percent", (const wchar*)L"Opponent at 50 percent", (const wchar*)L"Opponent at 25 percent",
-        (const wchar*)L"Opponent's X-ray is ready", (const wchar*)L"Opponent near a wall", (const wchar*)L"Opponent in the corner" };
+        (const wchar*)L"Opponent's X-ray is ready", (const wchar*)L"Opponent getting close to a wall", (const wchar*)L"Opponent in the corner" };
     int k = g_testStep - 1;
     int side = k < 6 ? g_you : !g_you;   /* each plays from that fighter's side */
-    speak_force_q(says[k], 1); snd_play_pan(names[k], (g_stereo || k % 6 >= 4) ? (side ? 1 : -1) : 0);
+    speak_force_q(says[k], 1);
+    if (k % 6 == 4) { g_rampName = names[k]; g_rampPan = side ? 1 : -1; g_rampT = now; }   /* the steady sound, getting louder */
+    else snd_play_pan(names[k], (g_stereo || k % 6 >= 4) ? (side ? 1 : -1) : 0);
     g_testT = now; g_testStep = k + 2 > 12 ? 0 : k + 2;
 }
 static void menu_pad(int x)

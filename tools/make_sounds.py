@@ -69,9 +69,17 @@ def main(folder):
             env = min(1.0, t / 0.002) * math.exp(-decay * t)
             out.append(amp * env * (0.7 * math.sin(2 * math.pi * freq * t * (1 + 0.6 * math.exp(-30 * t))) + noise * lp))
         return out
-    write(folder, "wall_near_you", knock(150, 0.25, 0.55, 18, 1.2))
+    # the steady wall sound: exactly one second, whole cycles only, so it loops without a click
+    def hum(freq, amp, harm, trem):
+        out = []
+        for i in range(RATE):
+            t = i / RATE
+            v = sum(h * math.sin(2 * math.pi * freq * (k + 1) * t) for k, h in enumerate(harm)) / sum(harm)
+            out.append(amp * v * (1 - trem + trem * (0.5 + 0.5 * math.sin(2 * math.pi * 6 * t))))
+        return out
+    write(folder, "wall_loop_you", hum(110, 0.5, (1.0, 0.5, 0.25, 0.12), 0.35))
+    write(folder, "wall_loop_opponent", hum(330, 0.35, (1.0, 0.3, 0.1), 0.35))
     write(folder, "corner_you", seq(knock(110, 0.16, 0.8, 22, 1.8), silence(0.05), knock(90, 0.35, 0.85, 12, 2.0)))
-    write(folder, "wall_near_opponent", knock(420, 0.2, 0.45, 22, 0.8))
     write(folder, "corner_opponent", seq(knock(330, 0.14, 0.6, 26, 1.2), silence(0.05), knock(280, 0.3, 0.65, 14, 1.4)))
     # menu
     write(folder, "menu_open", sweep(500, 900, 0.12))
