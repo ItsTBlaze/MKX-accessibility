@@ -1,4 +1,4 @@
-MKX Access 0.8.1 - screen reader support for Mortal Kombat X
+MKX Access 0.9.12 - screen reader support for Mortal Kombat X
 =============================================================
 
 MKX Access makes Mortal Kombat X (Steam, PC) speak through the NVDA
@@ -50,6 +50,43 @@ Damage and combos
 - F10 turns the damage numbers off and on. With them off you still
   hear hit levels and combo counts: "mid", "5 hit combo, overhead,
   mid, mid, mid, mid", "throw".
+- Ctrl+F10 turns the whole hit and combo readout off and on.
+
+Fight sounds
+Short sounds tell you what is happening in a fight. Your sounds are low,
+your opponent's are high.
+- Health: one tone when a fighter drops to 75 percent, two at 50
+  percent, three harder tones at 25 percent.
+- X-ray: four rising notes as soon as a fighter's super meter is full
+  and the X-ray can be used.
+- Health and X-ray sounds come from the side of that fighter's health
+  bar: player 1 on the left, player 2 on the right.
+- Walls: a steady hum while a fighter is close to a wall, from that
+  wall's side. It gets louder the closer they get and is loudest in
+  the corner. It stops when a round ends and in the pause and results
+  menus.
+- The mod works out on its own which fighter is you, at the start of
+  every fight.
+- Every sound is a .wav file in the "MKXAccess Sounds" folder in the
+  game folder, and you can replace any of them with your own. See
+  "About these sounds.txt" in that folder. Install never replaces a
+  sound that is already there.
+
+Accessibility menu
+- Open it with F3, or hold Back and press Y on the controller. While it
+  is open, the game gets no key presses or button presses.
+- Up and down choose, left and right change, B or Escape closes (or F3,
+  or Back and Y again).
+- In order: Auto read, Hit and combo readout, Combo damage numbers,
+  Menu sounds, Overall sound volume, Your health sounds, Opponent
+  health sounds, Your X-ray ready sound, Opponent X-ray ready sound,
+  Wall hum, Close menu.
+- On a sound, left and right set its volume in steps of 10 percent and
+  play it at the new volume. 0 turns it off. A or Enter just plays it.
+- Overall sound volume works on top of each sound's own volume. It
+  only changes the mod's sounds, not the game or NVDA.
+- Your choices are saved in MKXAccess.ini in the game folder and kept
+  for next time.
 
 Online
 - Matchmaking status as it changes: "LOOKING FOR OPPONENT",
@@ -137,6 +174,8 @@ What it leaves out, to keep things quiet
 
 
 HOTKEYS (only while the game window is in front)
+  F3  open or close the accessibility menu (controller: hold Back,
+      press Y)
   F5  repeat the last thing spoken
   F6  read everything on the current screen. Use this if a screen
       seems silent. While typing a name or message, F6 reads
@@ -146,14 +185,15 @@ HOTKEYS (only while the game window is in front)
   F8  mute or unmute the mod
   F9  say which version of the mod is running
   F10 turn damage numbers on or off (hit levels and combos stay)
+  Ctrl+F10 turn the hit and combo readout on or off
   F11 next friend to invite, Shift+F11 previous, Ctrl+F11 send invite
       (Ctrl+F11 accepts when a friend has invited you)
 
 
 KNOWN LIMITS
 - Only online friends are listed, since offline friends can't join.
-- Fights are not narrated beyond damage and combos. The game's own
-  sounds still tell you most of what is happening.
+- Fights are not narrated beyond damage, combos and the fight sounds.
+  The game's own sounds still tell you most of what is happening.
 - Steam version only. On a different version, the mod says "could not
   hook this game version" and stays out of the way.
 - Best used offline. The mod only reads text and doesn't change

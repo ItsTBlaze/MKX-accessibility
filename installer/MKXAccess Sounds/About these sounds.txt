@@ -1,0 +1,23 @@
+MKX Access sounds
+
+Every sound the mod plays is one .wav file in this folder. To use your own
+sound, replace a file with yours and keep the same name. A 16-bit .wav plays
+at the volume you set in the accessibility menu; other .wav kinds play at
+their own volume. If a file is missing, that sound is just skipped.
+Restart the game after replacing a file. Any 16-bit .wav works, mono or
+stereo, at any sample rate.
+
+you75.wav        your health dropped to 75 percent (one low tone)
+you50.wav        your health dropped to 50 percent (two low tones)
+you25.wav        your health dropped to 25 percent (three hard low tones)
+opponent75.wav   your opponent dropped to 75 percent (one high ping)
+opponent50.wav   your opponent dropped to 50 percent (two high pings)
+opponent25.wav   your opponent dropped to 25 percent (three high pings)
+xray_you.wav     your super meter is full: X-ray ready (low rising notes)
+xray_opponent.wav  your opponent's X-ray is ready (high rising notes)
+wall_loop.wav           steady hum while either fighter is close to a wall, louder the closer they
+                        get, from that wall's side (it repeats, so a replacement should loop smoothly)
+menu_open.wav    the accessibility menu opened
+menu_close.wav   the accessibility menu closed
+menu_move.wav    moved to another item in the menu
+menu_edge.wav    went past the last or first item (the menu wraps around)

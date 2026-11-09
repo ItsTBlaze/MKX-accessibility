@@ -5,13 +5,19 @@ game's menus aloud through [NVDA](https://www.nvaccess.org/): menu items and the
 descriptions, option names with their values, character and variation select,
 move lists, damage and combos in fights, and popup messages. It also replaces Steam's unreadable invite window with a spoken friend list, and announces invites you receive so you can accept them from the game.
 
-Status: early testing (version 0.8.1). Feedback is very welcome; see
+In fights it plays sounds you can tune: health warnings at 75, 50 and 25 percent,
+an X-ray ready sound, and a hum that grows louder as a fighter nears a wall. Health
+and X-ray sounds come from the side of that fighter's health bar; the wall hum
+comes from the wall's side. An accessibility menu (F3, or hold Back and press Y)
+sets the volume of each sound and the readout options.
+
+Status: early testing (version 0.9.12). Feedback is very welcome; see
 [Reporting problems](#reporting-problems).
 
 ## Install
 
 1. Download **[MKXAccess.zip](https://github.com/ItsTBlaze/MKX-accessibility/raw/main/download/MKXAccess.zip)**.
-   This link always gets the newest version (currently 0.8.1).
+   This link always gets the newest version (currently 0.9.12).
 2. Unzip it, and make sure Mortal Kombat X is closed.
 3. Open the unzipped MKXAccess folder and run **Install**. It finds the game on its
    own and tells you when it's done. Windows may ask whether to run a file from the
@@ -25,7 +31,7 @@ mod, run **Uninstall** from the same folder.
 If Install can't find the game, copy the files by hand: in Steam, right-click
 Mortal Kombat X, choose **Manage**, then **Browse local files**, open **Binaries**,
 then **Retail**, and copy `dinput8.dll`, `MKXAccess.asi`,
-`nvdaControllerClient64.dll` and `LICENSE-NVDA.txt` there.
+`nvdaControllerClient64.dll`, `LICENSE-NVDA.txt` and the `MKXAccess Sounds` folder there.
 
 ## Hotkeys
 
@@ -33,13 +39,22 @@ These only work while the game window is in front.
 
 | Key | Action |
 | --- | --- |
+| F3 | Open or close the accessibility menu (controller: hold Back and press Y) |
 | F5 | Repeat the last thing spoken |
 | F6 | Read everything on the current screen (while typing a room name or message: read what you typed) |
 | F7 | Turn auto-reading of new text on or off |
 | F8 | Mute or unmute the mod |
 | F9 | Say which version of the mod is running |
 | F10 | Turn damage numbers on or off (hit levels and combo counts stay) |
+| Ctrl+F10 | Turn the hit and combo readout on or off |
 | F11 | Next Steam friend to invite (Shift+F11 previous, Ctrl+F11 send the invite). On the invite screen, also D-pad down / up and A on the controller. When a friend invites you, Ctrl+F11 or the controller's Back button accepts |
+
+## Sounds
+
+Every sound is a `.wav` file in the `MKXAccess Sounds` folder next to the mod, and
+any of them can be replaced (any 16-bit `.wav`, mono or stereo, any sample rate).
+Install adds missing sounds but never replaces one that is already there. The
+starter sounds are made by `tools/make_sounds.py`.
 
 ## Reporting problems
 

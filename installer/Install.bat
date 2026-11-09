@@ -7,9 +7,9 @@ echo.
 
 if /I "%~1"=="/uninstall" goto :uninstall
 
-for %%F in (MKXAccess.asi nvdaControllerClient64.dll LICENSE-NVDA.txt dinput8.dll) do (
-    if not exist "%%F" (
-        echo The file %%F is missing.
+for %%F in (MKXAccess.asi nvdaControllerClient64.dll LICENSE-NVDA.txt dinput8.dll "MKXAccess Sounds\you75.wav") do (
+    if not exist "%%~F" (
+        echo The file %%~F is missing.
         echo Please unzip the whole MKXAccess folder first, then run Install again from the unzipped folder.
         goto :fail
     )
@@ -22,7 +22,7 @@ if not defined GAME (
     echo Could not find Mortal Kombat X. It needs the Steam version installed.
     echo.
     echo To install by hand: in Steam, open the context menu on Mortal Kombat X, choose Manage, then Browse local files.
-    echo Open Binaries, then Retail, and copy dinput8.dll, MKXAccess.asi, nvdaControllerClient64.dll and LICENSE-NVDA.txt there.
+    echo Open Binaries, then Retail, and copy dinput8.dll, MKXAccess.asi, nvdaControllerClient64.dll, LICENSE-NVDA.txt and the MKXAccess Sounds folder there.
     goto :fail
 )
 echo Found the game in !GAME!
@@ -30,6 +30,18 @@ echo Found the game in !GAME!
 copy /Y "MKXAccess.asi" "!GAME!\" >nul || goto :copyfail
 copy /Y "nvdaControllerClient64.dll" "!GAME!\" >nul || goto :copyfail
 copy /Y "LICENSE-NVDA.txt" "!GAME!\" >nul || goto :copyfail
+
+rem Sounds: add any that are missing, but never replace one already there (it may be
+rem someone's own sound). The list of sounds is always brought up to date.
+if not exist "!GAME!\MKXAccess Sounds\" mkdir "!GAME!\MKXAccess Sounds" || goto :copyfail
+for %%S in ("MKXAccess Sounds\*.wav") do (
+    if not exist "!GAME!\MKXAccess Sounds\%%~nxS" copy /Y "%%~S" "!GAME!\MKXAccess Sounds\" >nul || goto :copyfail
+)
+copy /Y "MKXAccess Sounds\About these sounds.txt" "!GAME!\MKXAccess Sounds\" >nul
+rem sounds from test versions that are no longer used
+for %%F in (corner_you corner_opponent wall_near_you wall_near_opponent wall_loop_you wall_loop_opponent) do (
+    if exist "!GAME!\MKXAccess Sounds\%%F.wav" del /F /Q "!GAME!\MKXAccess Sounds\%%F.wav"
+)
 
 rem Keep another mod's dinput8.dll (such as MKXHook's loader), which also loads MKX Access.
 set "KEPT="
@@ -59,9 +71,10 @@ if not defined GAME (
     echo Could not find Mortal Kombat X, so there is nothing to remove.
     goto :fail
 )
-for %%F in (MKXAccess.asi nvdaControllerClient64.dll LICENSE-NVDA.txt MKXAccess.log MKXAccess-README.txt) do (
+for %%F in (MKXAccess.asi nvdaControllerClient64.dll LICENSE-NVDA.txt MKXAccess.log MKXAccess-README.txt MKXAccess.ini) do (
     if exist "!GAME!\%%F" del /F /Q "!GAME!\%%F"
 )
+if exist "!GAME!\MKXAccess Sounds\" rmdir /S /Q "!GAME!\MKXAccess Sounds"
 rem Only remove our own small loader, never another mod's.
 if exist "!GAME!\dinput8.dll" (
     for %%A in ("!GAME!\dinput8.dll") do set "THEIRSIZE=%%~zA"
