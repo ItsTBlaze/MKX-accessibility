@@ -14,7 +14,7 @@
    Everything is also written to MKXAccess.log next to the game exe. */
 #include "win.h"
 
-#define VERSION L"0.9.0"
+#define VERSION L"0.9.1"
 #define FOCUS_DELAY 70   /* ms to wait after focus moves, for descriptions to arrive */
 #define IMAGE_BASE 0x140000000ULL
 
@@ -1785,16 +1785,19 @@ static void speak_force_q(const wchar* s, int interrupt)
    file just stays silent. Played with Windows' PlaySound from memory, one at a time. */
 typedef int (WINAPI *PlaySoundW_t)(const void*, HMODULE, DWORD);
 static PlaySoundW_t p_PlaySound;
-typedef struct { const char* name; int tried; BYTE* raw; DWORD len; BYTE* play; int playVol; DWORD dataOff, dataLen; int pcm16; } Sound;
+typedef struct { const char* name; int tried; BYTE* raw; DWORD len; BYTE* play; DWORD playLen; int playVol, playPan; DWORD dataOff, dataLen; int pcm16, chans, rate; } Sound;
 static Sound g_snd[] = {
     {"you75"}, {"you50"}, {"you25"}, {"opponent75"}, {"opponent50"}, {"opponent25"},
     {"menu_open"}, {"menu_close"}, {"menu_move"}, {"menu_edge"},
 };
 #define NSND (int)(sizeof(g_snd) / sizeof(g_snd[0]))
 static int g_volume = 80;   /* percent */
+static int g_stereo = 1;    /* health sounds come from the side of that fighter's health bar */
 static void wcat_a(wchar* d, const char* s, int max) { int n = wlen(d); for (int i = 0; s[i] && n < max - 1; i++) d[n++] = (wchar)(BYTE)s[i]; d[n] = 0; }
 static void wcat_u(wchar* d, u64 v, int max) { wchar num[24]; utoa_w(v, num, 10, 1); wcat(d, num, max); }
 static unsigned rd32(const BYTE* p) { return p[0] | (p[1] << 8) | (p[2] << 16) | ((unsigned)p[3] << 24); }
+static void wr32(BYTE* p, unsigned v) { p[0] = (BYTE)v; p[1] = (BYTE)(v >> 8); p[2] = (BYTE)(v >> 16); p[3] = (BYTE)(v >> 24); }
+static void wr16(BYTE* p, unsigned v) { p[0] = (BYTE)v; p[1] = (BYTE)(v >> 8); }
 static void snd_load(Sound* s)
 {
     s->tried = 1;
@@ -1805,21 +1808,31 @@ static void snd_load(Sound* s)
     DWORD len = GetFileSize(f, 0), got = 0;
     if (len >= 44 && len <= 8u * 1024 * 1024) {
         s->raw = (BYTE*)VirtualAlloc(0, len, MEM_COMMIT | MEM_RESERVE, 0x04);
-        s->play = (BYTE*)VirtualAlloc(0, len, MEM_COMMIT | MEM_RESERVE, 0x04);
-        if (s->raw && s->play && ReadFile(f, s->raw, len, &got, 0) && got == len) s->len = len;
+        if (s->raw && ReadFile(f, s->raw, len, &got, 0) && got == len) s->len = len;
     }
     CloseHandle(f);
     if (!s->len || rd32(s->raw) != 0x46464952 /* RIFF */ || rd32(s->raw + 8) != 0x45564157 /* WAVE */) { s->len = 0; return; }
     for (DWORD o = 12; o + 8 <= s->len; ) {
         unsigned id = rd32(s->raw + o), sz = rd32(s->raw + o + 4);
-        if (id == 0x20746D66 /* fmt  */ && sz >= 16 && o + 24 <= s->len)
-            s->pcm16 = (s->raw[o + 8] | (s->raw[o + 9] << 8)) == 1 && (s->raw[o + 22] | (s->raw[o + 23] << 8)) == 16;
+        if (id == 0x20746D66 /* fmt  */ && sz >= 16 && o + 24 <= s->len) {
+            s->chans = s->raw[o + 10] | (s->raw[o + 11] << 8);
+            s->rate = (int)rd32(s->raw + o + 12);
+            s->pcm16 = (s->raw[o + 8] | (s->raw[o + 9] << 8)) == 1 && (s->raw[o + 22] | (s->raw[o + 23] << 8)) == 16 && (s->chans == 1 || s->chans == 2);
+        }
         if (id == 0x61746164 /* data */) { s->dataOff = o + 8; s->dataLen = sz; if (s->dataOff + s->dataLen > s->len) s->dataLen = s->len - s->dataOff; }
         o += 8 + sz + (sz & 1);
     }
-    memcpy(s->play, s->raw, s->len); s->playVol = 100;
+    if (s->pcm16 && s->dataLen) {   /* room for a stereo copy: header + 4 bytes a frame */
+        DWORD frames = s->dataLen / (2 * s->chans);
+        s->playLen = 44 + frames * 4;
+        s->play = (BYTE*)VirtualAlloc(0, s->playLen, MEM_COMMIT | MEM_RESERVE, 0x04);
+        if (!s->play) s->pcm16 = 0;
+    }
+    s->playVol = -1;
 }
-static void snd_play(const char* name)
+/* pan: -1 left, 0 middle, 1 right. A 16-bit sound is turned into a stereo copy at the
+   menu volume, loud on its side and soft on the other so it still sounds natural. */
+static void snd_play_pan(const char* name, int pan)
 {
     if (g_muted || !g_base) return;
     if (!p_PlaySound) {
@@ -1832,14 +1845,27 @@ static void snd_play(const char* name)
     if (!s) return;
     if (!s->tried) snd_load(s);
     if (!s->len || g_volume <= 0) return;
-    if (s->pcm16 && s->playVol != g_volume) {   /* scale a fresh copy to the menu volume */
-        p_PlaySound(0, 0, 0);
-        short* src = (short*)(s->raw + s->dataOff); short* dst = (short*)(s->play + s->dataOff);
-        for (DWORD i = 0; i < s->dataLen / 2; i++) dst[i] = (short)((int)src[i] * g_volume / 100);
-        s->playVol = g_volume;
+    if (!s->pcm16) { p_PlaySound(s->raw, 0, 0x0001 | 0x0002 | 0x0004); return; }   /* as it is */
+    if (s->playVol != g_volume || s->playPan != pan) {
+        p_PlaySound(0, 0, 0);   /* nothing may play from the buffer while it is rewritten */
+        BYTE* h = s->play; DWORD frames = (s->playLen - 44) / 4;
+        wr32(h, 0x46464952); wr32(h + 4, s->playLen - 8); wr32(h + 8, 0x45564157);
+        wr32(h + 12, 0x20746D66); wr32(h + 16, 16); wr16(h + 20, 1); wr16(h + 22, 2);
+        wr32(h + 24, (unsigned)s->rate); wr32(h + 28, (unsigned)s->rate * 4); wr16(h + 32, 4); wr16(h + 34, 16);
+        wr32(h + 36, 0x61746164); wr32(h + 40, frames * 4);
+        int gl = pan < 0 ? 100 : pan > 0 ? 18 : 85, gr = pan > 0 ? 100 : pan < 0 ? 18 : 85;   /* percent per ear */
+        const short* src = (const short*)(s->raw + s->dataOff); short* dst = (short*)(h + 44);
+        for (DWORD i = 0; i < frames; i++) {
+            int l = src[i * s->chans], r = s->chans == 2 ? src[i * 2 + 1] : l;
+            if (s->chans == 2 && pan) l = r = (l + r) / 2;   /* a stereo file is folded to one voice before placing it */
+            dst[i * 2] = (short)(l * g_volume / 100 * gl / 100);
+            dst[i * 2 + 1] = (short)(r * g_volume / 100 * gr / 100);
+        }
+        s->playVol = g_volume; s->playPan = pan;
     }
     p_PlaySound(s->play, 0, 0x0001 | 0x0002 | 0x0004);   /* SND_ASYNC | SND_NODEFAULT | SND_MEMORY */
 }
+static void snd_play(const char* name) { snd_play_pan(name, 0); }
 
 /* ------------------------------------------------------------------ */
 /* settings, kept in MKXAccess.ini next to the mod                      */
@@ -1847,7 +1873,7 @@ static int g_healthYou = 1, g_healthOpp = 0, g_side = 0;   /* g_side: 0 automati
 static void settings_path(wchar* p) { wcpy(p, g_dir, MAX_PATH); wcat(p, (const wchar*)L"MKXAccess.ini", MAX_PATH); }
 static struct { const char* key; int* v; int lo, hi; } g_setDefs[] = {
     {"health_you", &g_healthYou, 0, 1}, {"health_opponent", &g_healthOpp, 0, 1}, {"your_side", &g_side, 0, 2},
-    {"volume", &g_volume, 0, 100}, {"damage_numbers", &g_damageNumbers, 0, 1}, {"auto_read", &g_autoRead, 0, 1},
+    {"volume", &g_volume, 0, 100}, {"stereo", &g_stereo, 0, 1}, {"damage_numbers", &g_damageNumbers, 0, 1}, {"auto_read", &g_autoRead, 0, 1},
 };
 #define NSET (int)(sizeof(g_setDefs) / sizeof(g_setDefs[0]))
 static void settings_load(void)
@@ -1955,7 +1981,7 @@ static void health_tick(DWORD now)
             int mine = p == g_you;
             if (mine ? g_healthYou : g_healthOpp) {
                 static const char* names[2][3] = { {"you75", "you50", "you25"}, {"opponent75", "opponent50", "opponent25"} };
-                snd_play(names[mine ? 0 : 1][lv - 1]);
+                snd_play_pan(names[mine ? 0 : 1][lv - 1], g_stereo ? (p ? 1 : -1) : 0);
             }
             static wchar line[64]; line[0] = 0;
             wcat(line, mine ? (const wchar*)L"you " : (const wchar*)L"opponent ", 64); wcat_u(line, (u64)(75 - 25 * (lv - 1)), 64);
@@ -1967,16 +1993,17 @@ static void health_tick(DWORD now)
 
 /* ------------------------------------------------------------------ */
 /* the accessibility menu                                               */
-enum { MI_HEALTH_YOU, MI_HEALTH_OPP, MI_SIDE, MI_VOLUME, MI_DAMAGE, MI_AUTOREAD, MI_TEST, MI_CLOSE, MI_COUNT };
+enum { MI_HEALTH_YOU, MI_HEALTH_OPP, MI_STEREO, MI_SIDE, MI_VOLUME, MI_DAMAGE, MI_AUTOREAD, MI_TEST, MI_CLOSE, MI_COUNT };
 static int g_menuShown, g_menuItem, g_menuHinted, g_testStep; static DWORD g_testT;
 static void menu_line(int i, wchar* out, int max, int withPos)
 {
     static const wchar* labels[MI_COUNT] = {
-        (const wchar*)L"Health sounds for you", (const wchar*)L"Health sounds for your opponent", (const wchar*)L"Your character",
+        (const wchar*)L"Health sounds for you", (const wchar*)L"Health sounds for your opponent",
+        (const wchar*)L"Health sounds from the side of each health bar", (const wchar*)L"Your character",
         (const wchar*)L"Sound volume", (const wchar*)L"Combo damage numbers", (const wchar*)L"Auto read",
         (const wchar*)L"Play the health sounds", (const wchar*)L"Close menu" };
     wcpy(out, labels[i], max);
-    int* b = i == MI_HEALTH_YOU ? &g_healthYou : i == MI_HEALTH_OPP ? &g_healthOpp : i == MI_DAMAGE ? &g_damageNumbers : i == MI_AUTOREAD ? &g_autoRead : 0;
+    int* b = i == MI_HEALTH_YOU ? &g_healthYou : i == MI_HEALTH_OPP ? &g_healthOpp : i == MI_STEREO ? &g_stereo : i == MI_DAMAGE ? &g_damageNumbers : i == MI_AUTOREAD ? &g_autoRead : 0;
     if (b) wcat(out, *b ? (const wchar*)L", on" : (const wchar*)L", off", max);
     if (i == MI_SIDE) wcat(out, g_side == 1 ? (const wchar*)L", player 1, left side" : g_side == 2 ? (const wchar*)L", player 2, right side" : (const wchar*)L", automatic", max);
     if (i == MI_VOLUME) { wcat(out, (const wchar*)L", ", max); wcat_u(out, (u64)g_volume, max); wcat(out, (const wchar*)L" percent", max); }
@@ -2013,7 +2040,7 @@ static void menu_move(int d)
 static void menu_change(int d, int activate)
 {
     int i = g_menuItem;
-    int* b = i == MI_HEALTH_YOU ? &g_healthYou : i == MI_HEALTH_OPP ? &g_healthOpp : i == MI_DAMAGE ? &g_damageNumbers : i == MI_AUTOREAD ? &g_autoRead : 0;
+    int* b = i == MI_HEALTH_YOU ? &g_healthYou : i == MI_HEALTH_OPP ? &g_healthOpp : i == MI_STEREO ? &g_stereo : i == MI_DAMAGE ? &g_damageNumbers : i == MI_AUTOREAD ? &g_autoRead : 0;
     if (b) *b = !*b;
     else if (i == MI_SIDE) { g_side = (g_side + (d < 0 ? 2 : 1)) % 3; if (g_side) g_you = g_side - 1; g_hpObj[0] = 0; }
     else if (i == MI_VOLUME) {
@@ -2035,7 +2062,8 @@ static void menu_tick(DWORD now)
     static const wchar* says[6] = { (const wchar*)L"You at 75 percent", (const wchar*)L"You at 50 percent", (const wchar*)L"You at 25 percent",
         (const wchar*)L"Opponent at 75 percent", (const wchar*)L"Opponent at 50 percent", (const wchar*)L"Opponent at 25 percent" };
     int k = g_testStep - 1;
-    speak_force_q(says[k], 1); snd_play(names[k]);
+    int side = k < 3 ? g_you : !g_you;   /* you play from your health bar's side */
+    speak_force_q(says[k], 1); snd_play_pan(names[k], g_stereo ? (side ? 1 : -1) : 0);
     g_testT = now; g_testStep = k + 2 > 6 ? 0 : k + 2;
 }
 static void menu_pad(int x)
