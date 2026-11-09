@@ -14,7 +14,7 @@
    Everything is also written to MKXAccess.log next to the game exe. */
 #include "win.h"
 
-#define VERSION L"0.9.8"
+#define VERSION L"0.9.9"
 #define FOCUS_DELAY 70   /* ms to wait after focus moves, for descriptions to arrive */
 #define IMAGE_BASE 0x140000000ULL
 
@@ -1818,7 +1818,7 @@ static int g_volume = 80;   /* percent: everything the mod plays */
 /* each kind of sound has its own volume (0 = off), set in the menu */
 enum { C_HEALTH_YOU, C_HEALTH_OPP, C_XRAY_YOU, C_XRAY_OPP, C_HUM, C_CORNER_YOU, C_CORNER_OPP, C_MENU, NCAT };
 static int g_cv[NCAT] = { -1, -1, -1, -1, -1, -1, -1, -1 };   /* -1 until loaded: then 100 or the old on/off */
-static int g_stereo = 1;    /* health sounds come from the side of that fighter's health bar */
+static int g_stereo = 1;    /* health and X-ray sounds come from the side of that fighter's health bar (always) */
 static void wcat_a(wchar* d, const char* s, int max) { int n = wlen(d); for (int i = 0; s[i] && n < max - 1; i++) d[n++] = (wchar)(BYTE)s[i]; d[n] = 0; }
 static void wcat_u(wchar* d, u64 v, int max) { wchar num[24]; utoa_w(v, num, 10, 1); wcat(d, num, max); }
 static unsigned rd32(const BYTE* p) { return p[0] | (p[1] << 8) | (p[2] << 16) | ((unsigned)p[3] << 24); }
@@ -1997,7 +1997,6 @@ static struct { const char* key; int* v; int lo, hi; int save; } g_setDefs[] = {
     {"sound_xray_you", &g_cv[C_XRAY_YOU], 0, 100, 1}, {"sound_xray_opponent", &g_cv[C_XRAY_OPP], 0, 100, 1},
     {"sound_wall_hum", &g_cv[C_HUM], 0, 100, 1}, {"sound_corner_you", &g_cv[C_CORNER_YOU], 0, 100, 1},
     {"sound_corner_opponent", &g_cv[C_CORNER_OPP], 0, 100, 1}, {"sound_menu", &g_cv[C_MENU], 0, 100, 1},
-    {"stereo", &g_stereo, 0, 1, 1},
     {"combo_readout", &g_comboReadout, 0, 1, 1}, {"damage_numbers", &g_damageNumbers, 0, 1, 1}, {"auto_read", &g_autoRead, 0, 1, 1},
     {"health_you", &g_oldHealthYou, 0, 1, 0}, {"health_opponent", &g_oldHealthOpp, 0, 1, 0}, {"xray_you", &g_oldXrayYou, 0, 1, 0},
     {"xray_opponent", &g_oldXrayOpp, 0, 1, 0}, {"wall_you", &g_oldWallYou, 0, 1, 0}, {"wall_opponent", &g_oldWallOpp, 0, 1, 0},
@@ -2230,24 +2229,23 @@ static void health_tick(DWORD now)
 /* Up/down choose, left/right change. On a sound, left/right set its volume in steps of
    10 (0 is off) and play the sound at the new volume, from the side it comes from in a
    fight. A/Enter on a sound just plays it. */
-enum { MI_VOLUME, MI_S_HEALTH_YOU, MI_S_HEALTH_OPP, MI_S_XRAY_YOU, MI_S_XRAY_OPP, MI_S_HUM, MI_S_CORNER_YOU, MI_S_CORNER_OPP, MI_S_MENU,
-       MI_STEREO, MI_COMBO, MI_DAMAGE, MI_AUTOREAD, MI_CLOSE, MI_COUNT };
+enum { MI_VOLUME, MI_S_MENU, MI_AUTOREAD, MI_COMBO, MI_DAMAGE,
+       MI_S_HEALTH_YOU, MI_S_HEALTH_OPP, MI_S_XRAY_YOU, MI_S_XRAY_OPP, MI_S_HUM, MI_S_CORNER_YOU, MI_S_CORNER_OPP,
+       MI_CLOSE, MI_COUNT };
 static int g_menuShown, g_menuItem, g_menuHinted;
 static DWORD g_humPreviewT; static int g_humPreviewPan;
-static int item_cat(int i) { return i >= MI_S_HEALTH_YOU && i <= MI_S_MENU ? C_HEALTH_YOU + (i - MI_S_HEALTH_YOU) : -1; }
+static int item_cat(int i) { return i == MI_S_MENU ? C_MENU : i >= MI_S_HEALTH_YOU && i <= MI_S_CORNER_OPP ? C_HEALTH_YOU + (i - MI_S_HEALTH_YOU) : -1; }
 static void menu_line(int i, wchar* out, int max, int withPos)
 {
     static const wchar* labels[MI_COUNT] = {
-        (const wchar*)L"Overall sound volume",
+        (const wchar*)L"Overall sound volume", (const wchar*)L"Menu sounds", (const wchar*)L"Auto read",
+        (const wchar*)L"Hit and combo readout", (const wchar*)L"Combo damage numbers",
         (const wchar*)L"Your health sounds", (const wchar*)L"Opponent health sounds",
         (const wchar*)L"Your X-ray ready sound", (const wchar*)L"Opponent X-ray ready sound",
         (const wchar*)L"Wall hum", (const wchar*)L"Your corner slam", (const wchar*)L"Opponent corner slam",
-        (const wchar*)L"Menu sounds",
-        (const wchar*)L"Health and X-ray sounds from each health bar's side",
-        (const wchar*)L"Hit and combo readout", (const wchar*)L"Combo damage numbers", (const wchar*)L"Auto read",
         (const wchar*)L"Close menu" };
     wcpy(out, labels[i], max);
-    int* b = i == MI_STEREO ? &g_stereo : i == MI_COMBO ? &g_comboReadout : i == MI_DAMAGE ? &g_damageNumbers : i == MI_AUTOREAD ? &g_autoRead : 0;
+    int* b = i == MI_COMBO ? &g_comboReadout : i == MI_DAMAGE ? &g_damageNumbers : i == MI_AUTOREAD ? &g_autoRead : 0;
     if (b) wcat(out, *b ? (const wchar*)L", on" : (const wchar*)L", off", max);
     int c = item_cat(i), v = i == MI_VOLUME ? g_volume : c >= 0 ? g_cv[c] : -1;
     if (v == 0) wcat(out, (const wchar*)L", off", max);
@@ -2304,7 +2302,7 @@ static void menu_move(int d)
 static void menu_change(int d, int activate)
 {
     int i = g_menuItem, c = item_cat(i);
-    int* b = i == MI_STEREO ? &g_stereo : i == MI_COMBO ? &g_comboReadout : i == MI_DAMAGE ? &g_damageNumbers : i == MI_AUTOREAD ? &g_autoRead : 0;
+    int* b = i == MI_COMBO ? &g_comboReadout : i == MI_DAMAGE ? &g_damageNumbers : i == MI_AUTOREAD ? &g_autoRead : 0;
     if (i == MI_VOLUME || c >= 0) {
         if (activate) { menu_preview(i); return; }   /* A/Enter: just listen */
         int* v = i == MI_VOLUME ? &g_volume : &g_cv[c];
