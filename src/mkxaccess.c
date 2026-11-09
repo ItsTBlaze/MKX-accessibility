@@ -1987,7 +1987,7 @@ static void snd_play(const char* name) { snd_play_pan(name, 0, C_MENU); }
 
 /* ------------------------------------------------------------------ */
 /* settings, kept in MKXAccess.ini next to the mod                      */
-static int g_side = 0;   /* 0 automatic, 1 player 1, 2 player 2 */
+static int g_side = 0;   /* always 0: who you are is worked out each fight */
 /* the on/off switches of 0.9.0-0.9.7, only read to carry them over to the volumes */
 static int g_oldHealthYou = -1, g_oldHealthOpp = -1, g_oldXrayYou = -1, g_oldXrayOpp = -1, g_oldWallYou = -1, g_oldWallOpp = -1;
 static void settings_path(wchar* p) { wcpy(p, g_dir, MAX_PATH); wcat(p, (const wchar*)L"MKXAccess.ini", MAX_PATH); }
@@ -1997,7 +1997,7 @@ static struct { const char* key; int* v; int lo, hi; int save; } g_setDefs[] = {
     {"sound_xray_you", &g_cv[C_XRAY_YOU], 0, 100, 1}, {"sound_xray_opponent", &g_cv[C_XRAY_OPP], 0, 100, 1},
     {"sound_wall_hum", &g_cv[C_HUM], 0, 100, 1}, {"sound_corner_you", &g_cv[C_CORNER_YOU], 0, 100, 1},
     {"sound_corner_opponent", &g_cv[C_CORNER_OPP], 0, 100, 1}, {"sound_menu", &g_cv[C_MENU], 0, 100, 1},
-    {"stereo", &g_stereo, 0, 1, 1}, {"your_side", &g_side, 0, 2, 1},
+    {"stereo", &g_stereo, 0, 1, 1},
     {"combo_readout", &g_comboReadout, 0, 1, 1}, {"damage_numbers", &g_damageNumbers, 0, 1, 1}, {"auto_read", &g_autoRead, 0, 1, 1},
     {"health_you", &g_oldHealthYou, 0, 1, 0}, {"health_opponent", &g_oldHealthOpp, 0, 1, 0}, {"xray_you", &g_oldXrayYou, 0, 1, 0},
     {"xray_opponent", &g_oldXrayOpp, 0, 1, 0}, {"wall_you", &g_oldWallYou, 0, 1, 0}, {"wall_opponent", &g_oldWallOpp, 0, 1, 0},
@@ -2231,7 +2231,7 @@ static void health_tick(DWORD now)
    10 (0 is off) and play the sound at the new volume, from the side it comes from in a
    fight. A/Enter on a sound just plays it. */
 enum { MI_VOLUME, MI_S_HEALTH_YOU, MI_S_HEALTH_OPP, MI_S_XRAY_YOU, MI_S_XRAY_OPP, MI_S_HUM, MI_S_CORNER_YOU, MI_S_CORNER_OPP, MI_S_MENU,
-       MI_STEREO, MI_SIDE, MI_COMBO, MI_DAMAGE, MI_AUTOREAD, MI_CLOSE, MI_COUNT };
+       MI_STEREO, MI_COMBO, MI_DAMAGE, MI_AUTOREAD, MI_CLOSE, MI_COUNT };
 static int g_menuShown, g_menuItem, g_menuHinted;
 static DWORD g_humPreviewT; static int g_humPreviewPan;
 static int item_cat(int i) { return i >= MI_S_HEALTH_YOU && i <= MI_S_MENU ? C_HEALTH_YOU + (i - MI_S_HEALTH_YOU) : -1; }
@@ -2243,13 +2243,12 @@ static void menu_line(int i, wchar* out, int max, int withPos)
         (const wchar*)L"Your X-ray ready sound", (const wchar*)L"Opponent X-ray ready sound",
         (const wchar*)L"Wall hum", (const wchar*)L"Your corner slam", (const wchar*)L"Opponent corner slam",
         (const wchar*)L"Menu sounds",
-        (const wchar*)L"Health and X-ray sounds from each health bar's side", (const wchar*)L"Your character",
+        (const wchar*)L"Health and X-ray sounds from each health bar's side",
         (const wchar*)L"Hit and combo readout", (const wchar*)L"Combo damage numbers", (const wchar*)L"Auto read",
         (const wchar*)L"Close menu" };
     wcpy(out, labels[i], max);
     int* b = i == MI_STEREO ? &g_stereo : i == MI_COMBO ? &g_comboReadout : i == MI_DAMAGE ? &g_damageNumbers : i == MI_AUTOREAD ? &g_autoRead : 0;
     if (b) wcat(out, *b ? (const wchar*)L", on" : (const wchar*)L", off", max);
-    if (i == MI_SIDE) wcat(out, g_side == 1 ? (const wchar*)L", player 1, left side" : g_side == 2 ? (const wchar*)L", player 2, right side" : (const wchar*)L", automatic", max);
     int c = item_cat(i), v = i == MI_VOLUME ? g_volume : c >= 0 ? g_cv[c] : -1;
     if (v == 0) wcat(out, (const wchar*)L", off", max);
     else if (v > 0) { wcat(out, (const wchar*)L", ", max); wcat_u(out, (u64)v, max); wcat(out, (const wchar*)L" percent", max); }
@@ -2320,7 +2319,6 @@ static void menu_change(int d, int activate)
         return;
     }
     if (b) *b = !*b;
-    else if (i == MI_SIDE) { g_side = (g_side + (d < 0 ? 2 : 1)) % 3; if (g_side) g_you = g_side - 1; g_hpObj[0] = 0; }
     else if (i == MI_CLOSE) { if (activate) menu_close(); return; }
     else return;
     settings_save();
