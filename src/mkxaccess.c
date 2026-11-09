@@ -14,7 +14,7 @@
    Everything is also written to MKXAccess.log next to the game exe. */
 #include "win.h"
 
-#define VERSION L"0.9.1"
+#define VERSION L"0.9.2"
 #define FOCUS_DELAY 70   /* ms to wait after focus moves, for descriptions to arrive */
 #define IMAGE_BASE 0x140000000ULL
 
@@ -721,8 +721,10 @@ static void speak(const wchar* s, int interrupt);
    into a combo are not read one by one; the combo is read once it ends
    ("player 1, 3 hit combo, 12 percent"). */
 static int g_damageNumbers = 1;   /* F10: say the percentages (hit levels and combo counts always) */
+static int g_comboReadout = 1;    /* Ctrl+F10: read hits and combos at all */
 static wchar g_hitDmg[32], g_hitLevel[32]; static int g_hitCell = -1; static DWORD g_hitT; static int g_hitPending;
-typedef struct { wchar hits[16], dmg[32]; DWORD t, start; int dirty, ended; } Combo;
+typedef struct { wchar hits[16], dmg[32]; DWORD t, start; int dirty, ended, gotHits; } Combo;
+static DWORD g_lifeDropT; static int g_lifeKnown;   /* last time a fighter lost health (health_tick) */
 static Combo g_combo[2];
 static wchar g_seq[256]; static int g_seqN; static DWORD g_seqT;   /* "high, mid, mid" */
 #define HIT_WAIT 900     /* ms: a second hit within this turns the first into a combo (launchers take ~850) */
@@ -786,8 +788,8 @@ static int fight_text(Entry* e, const wchar* clean, DWORD t)
     if (contains_ci(p, "comboNotifier")) {
         int side = contains_ci(p, "comboNotifierRight") ? 1 : 0;
         Combo* c = &g_combo[side];
-        if (contains_ci(p, "hitsAmount")) { if (!c->dirty) c->start = t; wcpy(c->hits, clean, 16); c->t = t; c->dirty = 1; c->ended = 0; }
-        else if (contains_ci(p, "damageAmount")) { if (!c->dirty) c->start = t; wcpy(c->dmg, clean, 32); c->t = t; c->dirty = 1; c->ended = 0; }
+        if (contains_ci(p, "hitsAmount")) { if (!c->dirty) c->start = t; wcpy(c->hits, clean, 16); c->t = t; c->dirty = 1; c->ended = 0; c->gotHits = 1; }
+        else if (contains_ci(p, "damageAmount")) { if (!c->dirty) { c->start = t; c->gotHits = 0; } wcpy(c->dmg, clean, 32); c->t = t; c->dirty = 1; c->ended = 0; }
         return 1;   /* "Hits" / "Damage" labels are not read either */
     }
     return 0;
@@ -816,7 +818,7 @@ static void fight_tick(DWORD now)
             if (line[0]) wcat(line, (const wchar*)L", ", 96);
             wcat(line, pct, 96);
         }
-        if (line[0]) speak(line, 1);
+        if (line[0] && g_comboReadout) speak(line, 1);
     }
     for (int s = 0; s < 2; s++) {
         Combo* c = &g_combo[s];
@@ -824,6 +826,11 @@ static void fight_tick(DWORD now)
            mid-string (launchers, specials) and a timer alone cut them in half */
         if (!c->dirty || !(c->ended || now - c->t >= COMBO_GIVE_UP)) continue;
         c->dirty = 0; c->ended = 0;
+        /* the same hit count as last time isn't sent again, so a combo can be just a new
+           damage value. But the counter also re-sets its old damage when a fight starts:
+           without a new count, only read it if somebody actually lost health just now */
+        if (!c->gotHits && g_lifeKnown && now - g_lifeDropT > 3000) { c->gotHits = 0; continue; }
+        c->gotHits = 0;
         int hits = 0; for (int i = 0; c->hits[i] >= '0' && c->hits[i] <= '9'; i++) hits = hits * 10 + (c->hits[i] - '0');
         if (hits < 2) continue;
         wchar line[128];
@@ -834,7 +841,7 @@ static void fight_tick(DWORD now)
             wcpy(line, (const wchar*)L"throw", 128);
             if (c->dmg[0] && g_damageNumbers) { wchar pct[48]; say_percent(c->dmg, pct, 48); wcat(line, (const wchar*)L", ", 128); wcat(line, pct, 128); }
             g_seq[0] = 0; g_seqN = 0;
-            speak(line, 1);
+            if (g_comboReadout) speak(line, 1);
             continue;
         }
         wcpy(line, c->hits, 128); wcat(line, (const wchar*)L" hit combo", 128);
@@ -844,7 +851,7 @@ static void fight_tick(DWORD now)
         wcpy(full, line, 400);
         if (s == 0 && g_seqN == hits && (int)(c->t - g_seqT) >= -100 && (int)(c->t - g_seqT) <= 100) { wcat(full, (const wchar*)L", ", 400); wcat(full, g_seq, 400); }
         if (s == 0) { g_seq[0] = 0; g_seqN = 0; }   /* this string is done */
-        speak(full, 1);
+        if (g_comboReadout) speak(full, 1);
     }
 }
 
@@ -1873,7 +1880,7 @@ static int g_healthYou = 1, g_healthOpp = 0, g_side = 0;   /* g_side: 0 automati
 static void settings_path(wchar* p) { wcpy(p, g_dir, MAX_PATH); wcat(p, (const wchar*)L"MKXAccess.ini", MAX_PATH); }
 static struct { const char* key; int* v; int lo, hi; } g_setDefs[] = {
     {"health_you", &g_healthYou, 0, 1}, {"health_opponent", &g_healthOpp, 0, 1}, {"your_side", &g_side, 0, 2},
-    {"volume", &g_volume, 0, 100}, {"stereo", &g_stereo, 0, 1}, {"damage_numbers", &g_damageNumbers, 0, 1}, {"auto_read", &g_autoRead, 0, 1},
+    {"volume", &g_volume, 0, 100}, {"stereo", &g_stereo, 0, 1}, {"combo_readout", &g_comboReadout, 0, 1}, {"damage_numbers", &g_damageNumbers, 0, 1}, {"auto_read", &g_autoRead, 0, 1},
 };
 #define NSET (int)(sizeof(g_setDefs) / sizeof(g_setDefs[0]))
 static void settings_load(void)
@@ -1947,7 +1954,7 @@ static void read_fighter(u64 fg, int p, Fighter* f)
     if (gp && readable((void*)gp, 4)) f->pad = *(int*)gp;
     f->ai = obj_live(rdp(f->info + 0x2D8), f->info + 0x2E0);
 }
-static int g_hpLevel[2], g_you;
+static int g_hpLevel[2], g_you; static float g_hpLife[2];
 static u64 g_hpObj[2];
 static int hp_level(float frac) { return (frac <= 0.75f) + (frac <= 0.50f) + (frac <= 0.25f); }
 static void health_tick(DWORD now)
@@ -1972,10 +1979,14 @@ static void health_tick(DWORD now)
         }
         wcat(line, g_you ? (const wchar*)L" -> you are P2" : (const wchar*)L" -> you are P1", 256);
         logf3((const wchar*)L"FIGHTERS", 0, line);
-        for (int p = 0; p < 2; p++) { g_hpObj[p] = f[p].obj; g_hpLevel[p] = hp_level(f[p].life / f[p].max); }
+        for (int p = 0; p < 2; p++) { g_hpObj[p] = f[p].obj; g_hpLevel[p] = hp_level(f[p].life / f[p].max); g_hpLife[p] = f[p].life; }
+        g_combo[0].dirty = g_combo[1].dirty = 0;   /* nothing from the last fight carries over */
+        g_lifeKnown = 1;
         return;
     }
     for (int p = 0; p < 2; p++) {
+        if (f[p].life < g_hpLife[p]) g_lifeDropT = now;
+        g_hpLife[p] = f[p].life;
         int lv = hp_level(f[p].life / f[p].max);
         if (lv > g_hpLevel[p] && f[p].life > 0) {
             int mine = p == g_you;
@@ -1993,17 +2004,17 @@ static void health_tick(DWORD now)
 
 /* ------------------------------------------------------------------ */
 /* the accessibility menu                                               */
-enum { MI_HEALTH_YOU, MI_HEALTH_OPP, MI_STEREO, MI_SIDE, MI_VOLUME, MI_DAMAGE, MI_AUTOREAD, MI_TEST, MI_CLOSE, MI_COUNT };
+enum { MI_HEALTH_YOU, MI_HEALTH_OPP, MI_STEREO, MI_SIDE, MI_VOLUME, MI_COMBO, MI_DAMAGE, MI_AUTOREAD, MI_TEST, MI_CLOSE, MI_COUNT };
 static int g_menuShown, g_menuItem, g_menuHinted, g_testStep; static DWORD g_testT;
 static void menu_line(int i, wchar* out, int max, int withPos)
 {
     static const wchar* labels[MI_COUNT] = {
         (const wchar*)L"Health sounds for you", (const wchar*)L"Health sounds for your opponent",
         (const wchar*)L"Health sounds from the side of each health bar", (const wchar*)L"Your character",
-        (const wchar*)L"Sound volume", (const wchar*)L"Combo damage numbers", (const wchar*)L"Auto read",
+        (const wchar*)L"Sound volume", (const wchar*)L"Hit and combo readout", (const wchar*)L"Combo damage numbers", (const wchar*)L"Auto read",
         (const wchar*)L"Play the health sounds", (const wchar*)L"Close menu" };
     wcpy(out, labels[i], max);
-    int* b = i == MI_HEALTH_YOU ? &g_healthYou : i == MI_HEALTH_OPP ? &g_healthOpp : i == MI_STEREO ? &g_stereo : i == MI_DAMAGE ? &g_damageNumbers : i == MI_AUTOREAD ? &g_autoRead : 0;
+    int* b = i == MI_HEALTH_YOU ? &g_healthYou : i == MI_HEALTH_OPP ? &g_healthOpp : i == MI_STEREO ? &g_stereo : i == MI_COMBO ? &g_comboReadout : i == MI_DAMAGE ? &g_damageNumbers : i == MI_AUTOREAD ? &g_autoRead : 0;
     if (b) wcat(out, *b ? (const wchar*)L", on" : (const wchar*)L", off", max);
     if (i == MI_SIDE) wcat(out, g_side == 1 ? (const wchar*)L", player 1, left side" : g_side == 2 ? (const wchar*)L", player 2, right side" : (const wchar*)L", automatic", max);
     if (i == MI_VOLUME) { wcat(out, (const wchar*)L", ", max); wcat_u(out, (u64)g_volume, max); wcat(out, (const wchar*)L" percent", max); }
@@ -2040,7 +2051,7 @@ static void menu_move(int d)
 static void menu_change(int d, int activate)
 {
     int i = g_menuItem;
-    int* b = i == MI_HEALTH_YOU ? &g_healthYou : i == MI_HEALTH_OPP ? &g_healthOpp : i == MI_STEREO ? &g_stereo : i == MI_DAMAGE ? &g_damageNumbers : i == MI_AUTOREAD ? &g_autoRead : 0;
+    int* b = i == MI_HEALTH_YOU ? &g_healthYou : i == MI_HEALTH_OPP ? &g_healthOpp : i == MI_STEREO ? &g_stereo : i == MI_COMBO ? &g_comboReadout : i == MI_DAMAGE ? &g_damageNumbers : i == MI_AUTOREAD ? &g_autoRead : 0;
     if (b) *b = !*b;
     else if (i == MI_SIDE) { g_side = (g_side + (d < 0 ? 2 : 1)) % 3; if (g_side) g_you = g_side - 1; g_hpObj[0] = 0; }
     else if (i == MI_VOLUME) {
@@ -2112,11 +2123,15 @@ static void poll_keys(void)
     }
     if (f3) { g_menuOpen = 1; menu_show(); return; }
     if (f11) steam_invite_key((GetAsyncKeyState(0x10) & 0x8000) != 0, (GetAsyncKeyState(0x11) & 0x8000) != 0);
-    if (f10) { g_damageNumbers = !g_damageNumbers; speak_force(g_damageNumbers ? (const wchar*)L"Damage numbers on" : (const wchar*)L"Damage numbers off"); }
+    if (f10 && (GetAsyncKeyState(0x11) & 0x8000)) {   /* Ctrl+F10: hit and combo readout */
+        g_comboReadout = !g_comboReadout; settings_save();
+        speak_force(g_comboReadout ? (const wchar*)L"Hit and combo readout on" : (const wchar*)L"Hit and combo readout off");
+    }
+    else if (f10) { g_damageNumbers = !g_damageNumbers; settings_save(); speak_force(g_damageNumbers ? (const wchar*)L"Damage numbers on" : (const wchar*)L"Damage numbers off"); }
     if (f9) speak_force((const wchar*)(L"MKX Access version " VERSION));
     if (f5) { static wchar again[2048]; wcpy(again, g_last[0] ? g_last : (const wchar*)L"Nothing yet", 2048); speak(again, 1); }
     if (f6 && !entry_read()) read_screen();
-    if (f7) { g_autoRead = !g_autoRead; speak_force(g_autoRead ? (const wchar*)L"Auto read on" : (const wchar*)L"Auto read off"); }
+    if (f7) { g_autoRead = !g_autoRead; settings_save(); speak_force(g_autoRead ? (const wchar*)L"Auto read on" : (const wchar*)L"Auto read off"); }
     if (f8) { g_muted = !g_muted; speak_force(g_muted ? (const wchar*)L"MKX Access muted" : (const wchar*)L"MKX Access on"); }
 }
 
