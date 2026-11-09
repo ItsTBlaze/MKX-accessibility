@@ -14,7 +14,7 @@
    Everything is also written to MKXAccess.log next to the game exe. */
 #include "win.h"
 
-#define VERSION L"0.9.10"
+#define VERSION L"0.9.11"
 #define FOCUS_DELAY 70   /* ms to wait after focus moves, for descriptions to arrive */
 #define IMAGE_BASE 0x140000000ULL
 
@@ -258,8 +258,9 @@ static WORD g_padPrev[4];
 #define PAD_LEFT 0x0004
 #define PAD_RIGHT 0x0008
 #define PAD_START 0x0010
+#define PAD_Y 0x8000
 #define PAD_B 0x2000
-/* accessibility menu (F3, or hold Back and press Start): while it is open the game
+/* accessibility menu (F3, or hold Back and press Y): while it is open the game
    gets no controller input and no key presses, so nothing moves underneath it */
 static volatile int g_menuOpen;
 static WORD g_padHide[4];   /* buttons still held from the menu: hidden until released */
@@ -271,12 +272,13 @@ static DWORD WINAPI hk_XInputGetState(DWORD idx, XState* st)
     steam_register_callbacks();   /* game thread: safe place to register with Steam */
     WORD b = st->pad.wButtons, fresh = b & ~g_padPrev[idx];
     g_padPrev[idx] = b;
-    if (!g_menuOpen && (b & PAD_BACK) && (fresh & PAD_START)) {   /* Back + Start opens the menu */
+    /* Back + Y opens the menu (Back + Start was also caught by Steam for some players) */
+    if (!g_menuOpen && (b & PAD_BACK) && (fresh & PAD_Y)) {
         g_menuOpen = 1;
-        Event* e = q_begin(); if (e) { e->type = EV_MENUPAD; e->x = PAD_BACK | PAD_START; q_end(); }
+        Event* e = q_begin(); if (e) { e->type = EV_MENUPAD; e->x = PAD_BACK | PAD_Y; q_end(); }
     }
     if (g_menuOpen) {
-        WORD mine = fresh & (PAD_UP | PAD_DOWN | PAD_LEFT | PAD_RIGHT | PAD_A | PAD_B | PAD_START);
+        WORD mine = fresh & (PAD_UP | PAD_DOWN | PAD_LEFT | PAD_RIGHT | PAD_A | PAD_B | PAD_START | PAD_Y);
         if (mine && g_padWasMenu[idx]) { Event* e = q_begin(); if (e) { e->type = EV_MENUPAD; e->x = mine | (b & PAD_BACK); q_end(); } }
         g_padWasMenu[idx] = 1;
         memset(&st->pad, 0, sizeof(st->pad));
@@ -2034,7 +2036,7 @@ static void settings_save(void)
 {
     if (!g_base) return;
     static char buf[1024]; int n = 0;
-    const char* head = "; MKX Access settings - changed from the accessibility menu (F3, or hold Back and press Start)\r\n";
+    const char* head = "; MKX Access settings - changed from the accessibility menu (F3, or hold Back and press Y)\r\n";
     for (int i = 0; head[i]; i++) buf[n++] = head[i];
     for (int i = 0; i < NSET; i++) {
         if (!g_setDefs[i].save) continue;
@@ -2329,7 +2331,7 @@ static void menu_tick(DWORD now)
 static void menu_pad(int x)
 {
     if (!g_menuShown) return;   /* the opening press itself */
-    if ((x & PAD_START) && (x & PAD_BACK)) { menu_close(); return; }
+    if ((x & PAD_Y) && (x & PAD_BACK)) { menu_close(); return; }   /* Back + Y again */
     if (x & PAD_B) { menu_close(); return; }
     if (x & PAD_UP) menu_move(-1);
     if (x & PAD_DOWN) menu_move(1);
