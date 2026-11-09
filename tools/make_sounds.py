@@ -50,6 +50,15 @@ def main(folder):
     write(folder, "opponent50", seq(tone(1320, 0.15, 0.45, decay=16, harm=(1.0, 0.2)), silence(0.03), tone(1175, 0.3, 0.45, decay=12, harm=(1.0, 0.2))))
     o = lambda: tone(1047, 0.1, 0.45, decay=20, harm=(1.0, 0.2))
     write(folder, "opponent25", seq(o(), silence(0.03), o(), silence(0.03), tone(1047, 0.25, 0.45, decay=12, harm=(1.0, 0.2))))
+    # X-ray ready: a quick rising four-note power-up, low for you, high for the opponent
+    def arp(base, amp, harm):
+        notes = [base, base * 5 / 4, base * 3 / 2, base * 2]
+        out = []
+        for i, f in enumerate(notes):
+            out += tone(f, 0.09 if i < 3 else 0.4, amp, decay=10 if i < 3 else 5, harm=harm)
+        return out
+    write(folder, "xray_you", arp(262, 0.55, (1.0, 0.4, 0.2, 0.1)))
+    write(folder, "xray_opponent", arp(784, 0.42, (1.0, 0.25)))
     # menu
     write(folder, "menu_open", sweep(500, 900, 0.12))
     write(folder, "menu_close", sweep(900, 500, 0.12))

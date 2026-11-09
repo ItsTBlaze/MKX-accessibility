@@ -14,7 +14,7 @@
    Everything is also written to MKXAccess.log next to the game exe. */
 #include "win.h"
 
-#define VERSION L"0.9.2"
+#define VERSION L"0.9.3"
 #define FOCUS_DELAY 70   /* ms to wait after focus moves, for descriptions to arrive */
 #define IMAGE_BASE 0x140000000ULL
 
@@ -1795,7 +1795,7 @@ static PlaySoundW_t p_PlaySound;
 typedef struct { const char* name; int tried; BYTE* raw; DWORD len; BYTE* play; DWORD playLen; int playVol, playPan; DWORD dataOff, dataLen; int pcm16, chans, rate; } Sound;
 static Sound g_snd[] = {
     {"you75"}, {"you50"}, {"you25"}, {"opponent75"}, {"opponent50"}, {"opponent25"},
-    {"menu_open"}, {"menu_close"}, {"menu_move"}, {"menu_edge"},
+    {"menu_open"}, {"menu_close"}, {"menu_move"}, {"menu_edge"}, {"xray_you"}, {"xray_opponent"},
 };
 #define NSND (int)(sizeof(g_snd) / sizeof(g_snd[0]))
 static int g_volume = 80;   /* percent */
@@ -1876,10 +1876,10 @@ static void snd_play(const char* name) { snd_play_pan(name, 0); }
 
 /* ------------------------------------------------------------------ */
 /* settings, kept in MKXAccess.ini next to the mod                      */
-static int g_healthYou = 1, g_healthOpp = 0, g_side = 0;   /* g_side: 0 automatic, 1 player 1, 2 player 2 */
+static int g_healthYou = 1, g_healthOpp = 0, g_side = 0, g_xrayYou = 1, g_xrayOpp = 1;   /* g_side: 0 automatic, 1 player 1, 2 player 2 */
 static void settings_path(wchar* p) { wcpy(p, g_dir, MAX_PATH); wcat(p, (const wchar*)L"MKXAccess.ini", MAX_PATH); }
 static struct { const char* key; int* v; int lo, hi; } g_setDefs[] = {
-    {"health_you", &g_healthYou, 0, 1}, {"health_opponent", &g_healthOpp, 0, 1}, {"your_side", &g_side, 0, 2},
+    {"health_you", &g_healthYou, 0, 1}, {"health_opponent", &g_healthOpp, 0, 1}, {"xray_you", &g_xrayYou, 0, 1}, {"xray_opponent", &g_xrayOpp, 0, 1}, {"your_side", &g_side, 0, 2},
     {"volume", &g_volume, 0, 100}, {"stereo", &g_stereo, 0, 1}, {"combo_readout", &g_comboReadout, 0, 1}, {"damage_numbers", &g_damageNumbers, 0, 1}, {"auto_read", &g_autoRead, 0, 1},
 };
 #define NSET (int)(sizeof(g_setDefs) / sizeof(g_setDefs[0]))
@@ -1940,7 +1940,7 @@ static int obj_live(u64 ptr, u64 handleAt)
     int h = *(int*)handleAt; DWORD id = *(DWORD*)(ptr + 8);
     return h != -1 && !(id & 0x40000000) && id == (DWORD)h;
 }
-typedef struct { u64 info, obj; float life, max; int ok, pad, ai; } Fighter;
+typedef struct { u64 info, obj; float life, max, meter; int ok, pad, ai; } Fighter;
 static void read_fighter(u64 fg, int p, Fighter* f)
 {
     memset(f, 0, sizeof(*f)); f->pad = -1;
@@ -1953,8 +1953,11 @@ static void read_fighter(u64 fg, int p, Fighter* f)
     u64 gp = rdp(f->info + 0x50);
     if (gp && readable((void*)gp, 4)) f->pad = *(int*)gp;
     f->ai = obj_live(rdp(f->info + 0x2D8), f->info + 0x2E0);
+    /* PLAYER_INFO +0x28C super meter, 0 to 1 (PLAYER_INFO::GetSuperMeter; AdjustSuperMeter
+       keeps it there). Full, all three bars, is what an X-ray costs. */
+    f->meter = readable((void*)(f->info + 0x28C), 4) ? *(float*)(f->info + 0x28C) : -1;
 }
-static int g_hpLevel[2], g_you; static float g_hpLife[2];
+static int g_hpLevel[2], g_you, g_xrayReady[2]; static float g_hpLife[2];
 static u64 g_hpObj[2];
 static int hp_level(float frac) { return (frac <= 0.75f) + (frac <= 0.50f) + (frac <= 0.25f); }
 static void health_tick(DWORD now)
@@ -1981,8 +1984,20 @@ static void health_tick(DWORD now)
         logf3((const wchar*)L"FIGHTERS", 0, line);
         for (int p = 0; p < 2; p++) { g_hpObj[p] = f[p].obj; g_hpLevel[p] = hp_level(f[p].life / f[p].max); g_hpLife[p] = f[p].life; }
         g_combo[0].dirty = g_combo[1].dirty = 0;   /* nothing from the last fight carries over */
+        for (int p = 0; p < 2; p++) g_xrayReady[p] = f[p].meter >= 0.999f;   /* known from the start: no sound */
         g_lifeKnown = 1;
         return;
+    }
+    for (int p = 0; p < 2; p++) {   /* X-ray ready: the meter just filled */
+        float m = f[p].meter;
+        if (m < 0 || m > 1.01f) continue;
+        if (!g_xrayReady[p] && m >= 0.999f) {
+            g_xrayReady[p] = 1;
+            int mine = p == g_you;
+            if (mine ? g_xrayYou : g_xrayOpp) snd_play_pan(mine ? "xray_you" : "xray_opponent", g_stereo ? (p ? 1 : -1) : 0);
+            logf3((const wchar*)L"XRAY", 0, mine ? (const wchar*)L"you ready" : (const wchar*)L"opponent ready");
+        }
+        else if (g_xrayReady[p] && m < 0.98f) g_xrayReady[p] = 0;   /* used it (or lost meter): ready to tell again */
     }
     for (int p = 0; p < 2; p++) {
         if (f[p].life < g_hpLife[p]) g_lifeDropT = now;
@@ -2004,17 +2019,18 @@ static void health_tick(DWORD now)
 
 /* ------------------------------------------------------------------ */
 /* the accessibility menu                                               */
-enum { MI_HEALTH_YOU, MI_HEALTH_OPP, MI_STEREO, MI_SIDE, MI_VOLUME, MI_COMBO, MI_DAMAGE, MI_AUTOREAD, MI_TEST, MI_CLOSE, MI_COUNT };
+enum { MI_HEALTH_YOU, MI_HEALTH_OPP, MI_XRAY_YOU, MI_XRAY_OPP, MI_STEREO, MI_SIDE, MI_VOLUME, MI_COMBO, MI_DAMAGE, MI_AUTOREAD, MI_TEST, MI_CLOSE, MI_COUNT };
 static int g_menuShown, g_menuItem, g_menuHinted, g_testStep; static DWORD g_testT;
 static void menu_line(int i, wchar* out, int max, int withPos)
 {
     static const wchar* labels[MI_COUNT] = {
         (const wchar*)L"Health sounds for you", (const wchar*)L"Health sounds for your opponent",
-        (const wchar*)L"Health sounds from the side of each health bar", (const wchar*)L"Your character",
+        (const wchar*)L"X-ray ready sound for you", (const wchar*)L"X-ray ready sound for your opponent",
+        (const wchar*)L"Sounds from the side of each health bar", (const wchar*)L"Your character",
         (const wchar*)L"Sound volume", (const wchar*)L"Hit and combo readout", (const wchar*)L"Combo damage numbers", (const wchar*)L"Auto read",
-        (const wchar*)L"Play the health sounds", (const wchar*)L"Close menu" };
+        (const wchar*)L"Play the fight sounds", (const wchar*)L"Close menu" };
     wcpy(out, labels[i], max);
-    int* b = i == MI_HEALTH_YOU ? &g_healthYou : i == MI_HEALTH_OPP ? &g_healthOpp : i == MI_STEREO ? &g_stereo : i == MI_COMBO ? &g_comboReadout : i == MI_DAMAGE ? &g_damageNumbers : i == MI_AUTOREAD ? &g_autoRead : 0;
+    int* b = i == MI_HEALTH_YOU ? &g_healthYou : i == MI_HEALTH_OPP ? &g_healthOpp : i == MI_XRAY_YOU ? &g_xrayYou : i == MI_XRAY_OPP ? &g_xrayOpp : i == MI_STEREO ? &g_stereo : i == MI_COMBO ? &g_comboReadout : i == MI_DAMAGE ? &g_damageNumbers : i == MI_AUTOREAD ? &g_autoRead : 0;
     if (b) wcat(out, *b ? (const wchar*)L", on" : (const wchar*)L", off", max);
     if (i == MI_SIDE) wcat(out, g_side == 1 ? (const wchar*)L", player 1, left side" : g_side == 2 ? (const wchar*)L", player 2, right side" : (const wchar*)L", automatic", max);
     if (i == MI_VOLUME) { wcat(out, (const wchar*)L", ", max); wcat_u(out, (u64)g_volume, max); wcat(out, (const wchar*)L" percent", max); }
@@ -2051,7 +2067,7 @@ static void menu_move(int d)
 static void menu_change(int d, int activate)
 {
     int i = g_menuItem;
-    int* b = i == MI_HEALTH_YOU ? &g_healthYou : i == MI_HEALTH_OPP ? &g_healthOpp : i == MI_STEREO ? &g_stereo : i == MI_COMBO ? &g_comboReadout : i == MI_DAMAGE ? &g_damageNumbers : i == MI_AUTOREAD ? &g_autoRead : 0;
+    int* b = i == MI_HEALTH_YOU ? &g_healthYou : i == MI_HEALTH_OPP ? &g_healthOpp : i == MI_XRAY_YOU ? &g_xrayYou : i == MI_XRAY_OPP ? &g_xrayOpp : i == MI_STEREO ? &g_stereo : i == MI_COMBO ? &g_comboReadout : i == MI_DAMAGE ? &g_damageNumbers : i == MI_AUTOREAD ? &g_autoRead : 0;
     if (b) *b = !*b;
     else if (i == MI_SIDE) { g_side = (g_side + (d < 0 ? 2 : 1)) % 3; if (g_side) g_you = g_side - 1; g_hpObj[0] = 0; }
     else if (i == MI_VOLUME) {
@@ -2069,13 +2085,15 @@ static void menu_tick(DWORD now)
 {
     if (g_menuOpen && !g_menuShown) menu_show();          /* opened from the controller */
     if (!g_testStep || now - g_testT < (g_testStep == 1 ? 0u : 1500u)) return;
-    static const char* names[6] = {"you75", "you50", "you25", "opponent75", "opponent50", "opponent25"};
-    static const wchar* says[6] = { (const wchar*)L"You at 75 percent", (const wchar*)L"You at 50 percent", (const wchar*)L"You at 25 percent",
-        (const wchar*)L"Opponent at 75 percent", (const wchar*)L"Opponent at 50 percent", (const wchar*)L"Opponent at 25 percent" };
+    static const char* names[8] = {"you75", "you50", "you25", "xray_you", "opponent75", "opponent50", "opponent25", "xray_opponent"};
+    static const wchar* says[8] = { (const wchar*)L"You at 75 percent", (const wchar*)L"You at 50 percent", (const wchar*)L"You at 25 percent",
+        (const wchar*)L"Your X-ray is ready",
+        (const wchar*)L"Opponent at 75 percent", (const wchar*)L"Opponent at 50 percent", (const wchar*)L"Opponent at 25 percent",
+        (const wchar*)L"Opponent's X-ray is ready" };
     int k = g_testStep - 1;
-    int side = k < 3 ? g_you : !g_you;   /* you play from your health bar's side */
+    int side = k < 4 ? g_you : !g_you;   /* each plays from that fighter's health bar side */
     speak_force_q(says[k], 1); snd_play_pan(names[k], g_stereo ? (side ? 1 : -1) : 0);
-    g_testT = now; g_testStep = k + 2 > 6 ? 0 : k + 2;
+    g_testT = now; g_testStep = k + 2 > 8 ? 0 : k + 2;
 }
 static void menu_pad(int x)
 {
