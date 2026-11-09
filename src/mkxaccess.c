@@ -14,7 +14,7 @@
    Everything is also written to MKXAccess.log next to the game exe. */
 #include "win.h"
 
-#define VERSION L"0.9.9"
+#define VERSION L"0.9.10"
 #define FOCUS_DELAY 70   /* ms to wait after focus moves, for descriptions to arrive */
 #define IMAGE_BASE 0x140000000ULL
 
@@ -1811,13 +1811,13 @@ typedef struct { const char* name; int tried; BYTE* raw; DWORD len; DWORD dataOf
 static Sound g_snd[] = {
     {"you75"}, {"you50"}, {"you25"}, {"opponent75"}, {"opponent50"}, {"opponent25"},
     {"menu_open"}, {"menu_close"}, {"menu_move"}, {"menu_edge"}, {"xray_you"}, {"xray_opponent"},
-    {"wall_loop"}, {"corner_you"}, {"corner_opponent"},
+    {"wall_loop"},
 };
 #define NSND (int)(sizeof(g_snd) / sizeof(g_snd[0]))
 static int g_volume = 80;   /* percent: everything the mod plays */
 /* each kind of sound has its own volume (0 = off), set in the menu */
-enum { C_HEALTH_YOU, C_HEALTH_OPP, C_XRAY_YOU, C_XRAY_OPP, C_HUM, C_CORNER_YOU, C_CORNER_OPP, C_MENU, NCAT };
-static int g_cv[NCAT] = { -1, -1, -1, -1, -1, -1, -1, -1 };   /* -1 until loaded: then 100 or the old on/off */
+enum { C_HEALTH_YOU, C_HEALTH_OPP, C_XRAY_YOU, C_XRAY_OPP, C_HUM, C_MENU, NCAT };
+static int g_cv[NCAT] = { -1, -1, -1, -1, -1, -1 };   /* -1 until loaded: then 100 or the old on/off */
 static int g_stereo = 1;    /* health and X-ray sounds come from the side of that fighter's health bar (always) */
 static void wcat_a(wchar* d, const char* s, int max) { int n = wlen(d); for (int i = 0; s[i] && n < max - 1; i++) d[n++] = (wchar)(BYTE)s[i]; d[n] = 0; }
 static void wcat_u(wchar* d, u64 v, int max) { wchar num[24]; utoa_w(v, num, 10, 1); wcat(d, num, max); }
@@ -1995,8 +1995,7 @@ static struct { const char* key; int* v; int lo, hi; int save; } g_setDefs[] = {
     {"volume", &g_volume, 0, 100, 1},
     {"sound_health_you", &g_cv[C_HEALTH_YOU], 0, 100, 1}, {"sound_health_opponent", &g_cv[C_HEALTH_OPP], 0, 100, 1},
     {"sound_xray_you", &g_cv[C_XRAY_YOU], 0, 100, 1}, {"sound_xray_opponent", &g_cv[C_XRAY_OPP], 0, 100, 1},
-    {"sound_wall_hum", &g_cv[C_HUM], 0, 100, 1}, {"sound_corner_you", &g_cv[C_CORNER_YOU], 0, 100, 1},
-    {"sound_corner_opponent", &g_cv[C_CORNER_OPP], 0, 100, 1}, {"sound_menu", &g_cv[C_MENU], 0, 100, 1},
+    {"sound_wall_hum", &g_cv[C_HUM], 0, 100, 1}, {"sound_menu", &g_cv[C_MENU], 0, 100, 1},
     {"combo_readout", &g_comboReadout, 0, 1, 1}, {"damage_numbers", &g_damageNumbers, 0, 1, 1}, {"auto_read", &g_autoRead, 0, 1, 1},
     {"health_you", &g_oldHealthYou, 0, 1, 0}, {"health_opponent", &g_oldHealthOpp, 0, 1, 0}, {"xray_you", &g_oldXrayYou, 0, 1, 0},
     {"xray_opponent", &g_oldXrayOpp, 0, 1, 0}, {"wall_you", &g_oldWallYou, 0, 1, 0}, {"wall_opponent", &g_oldWallOpp, 0, 1, 0},
@@ -2004,7 +2003,7 @@ static struct { const char* key; int* v; int lo, hi; int save; } g_setDefs[] = {
 /* sounds without a saved volume: 100, or off if they were switched off before */
 static void settings_defaults(void)
 {
-    int* old[NCAT] = { &g_oldHealthYou, &g_oldHealthOpp, &g_oldXrayYou, &g_oldXrayOpp, 0, &g_oldWallYou, &g_oldWallOpp, 0 };
+    int* old[NCAT] = { &g_oldHealthYou, &g_oldHealthOpp, &g_oldXrayYou, &g_oldXrayOpp, 0, 0 };
     for (int c = 0; c < NCAT; c++) if (g_cv[c] < 0) g_cv[c] = old[c] && *old[c] == 0 ? 0 : 100;
     if (g_cv[C_HUM] < 0) g_cv[C_HUM] = 100;
     if (g_oldWallYou == 0 && g_oldWallOpp == 0 && g_cv[C_HUM] == 100) g_cv[C_HUM] = 0;
@@ -2119,12 +2118,12 @@ static void meter_full(u64 info)
     for (int p = 0; p < 2; p++)
         if (fg && rdp(fg + 0x1968 + 8 * p) == info && !g_xrayReady[p]) xray_ready(p, (const wchar*)L" (meter hook)");
 }
-/* walls: a steady sound from that wall's side while a fighter is close to a wall,
-   getting louder the closer they get, and a slam when they reach the corner. */
+/* walls: a steady hum from that wall's side while a fighter is close to a wall, getting
+   louder the closer they get (full in the corner). Reaching the corner is only logged. */
 static int g_wallZone[2], g_wallSide[2];
 #define WALL_NEAR 0.15f     /* of the stage length: the steady sound starts */
 #define WALL_AT 0.05f       /* in the corner (checked against the log: sounds right) */
-#define WALL_BACK 0.03f     /* has to move this much further out before the slam can sound again */
+#define WALL_BACK 0.03f     /* has to move this much further out before it is logged again */
 static float g_humVol; static int g_humPan;
 static void walls_quiet(void) { snd_loop(0, "", 0, 0); }
 static void wall_tick(Fighter* f, int p, float len, DWORD now)
@@ -2143,7 +2142,6 @@ static void wall_tick(Fighter* f, int p, float len, DWORD now)
     int cur = g_wallZone[p];
     if (zone > cur) {
         g_wallZone[p] = zone; g_wallSide[p] = side;
-        if (zone == 2) snd_play_pan(mine ? "corner_you" : "corner_opponent", side ? 1 : -1, mine ? C_CORNER_YOU : C_CORNER_OPP);
         static wchar line[96]; line[0] = 0;
         wcat(line, mine ? (const wchar*)L"you " : (const wchar*)L"opponent ", 96);
         wcat(line, zone == 2 ? (const wchar*)L"in the corner " : (const wchar*)L"near the wall ", 96);
@@ -2229,20 +2227,20 @@ static void health_tick(DWORD now)
 /* Up/down choose, left/right change. On a sound, left/right set its volume in steps of
    10 (0 is off) and play the sound at the new volume, from the side it comes from in a
    fight. A/Enter on a sound just plays it. */
-enum { MI_VOLUME, MI_S_MENU, MI_AUTOREAD, MI_COMBO, MI_DAMAGE,
-       MI_S_HEALTH_YOU, MI_S_HEALTH_OPP, MI_S_XRAY_YOU, MI_S_XRAY_OPP, MI_S_HUM, MI_S_CORNER_YOU, MI_S_CORNER_OPP,
+enum { MI_AUTOREAD, MI_COMBO, MI_DAMAGE, MI_S_MENU, MI_VOLUME,
+       MI_S_HEALTH_YOU, MI_S_HEALTH_OPP, MI_S_XRAY_YOU, MI_S_XRAY_OPP, MI_S_HUM,
        MI_CLOSE, MI_COUNT };
 static int g_menuShown, g_menuItem, g_menuHinted;
 static DWORD g_humPreviewT; static int g_humPreviewPan;
-static int item_cat(int i) { return i == MI_S_MENU ? C_MENU : i >= MI_S_HEALTH_YOU && i <= MI_S_CORNER_OPP ? C_HEALTH_YOU + (i - MI_S_HEALTH_YOU) : -1; }
+static int item_cat(int i) { return i == MI_S_MENU ? C_MENU : i >= MI_S_HEALTH_YOU && i <= MI_S_HUM ? C_HEALTH_YOU + (i - MI_S_HEALTH_YOU) : -1; }
 static void menu_line(int i, wchar* out, int max, int withPos)
 {
     static const wchar* labels[MI_COUNT] = {
-        (const wchar*)L"Overall sound volume", (const wchar*)L"Menu sounds", (const wchar*)L"Auto read",
-        (const wchar*)L"Hit and combo readout", (const wchar*)L"Combo damage numbers",
+        (const wchar*)L"Auto read", (const wchar*)L"Hit and combo readout", (const wchar*)L"Combo damage numbers",
+        (const wchar*)L"Menu sounds", (const wchar*)L"Overall sound volume",
         (const wchar*)L"Your health sounds", (const wchar*)L"Opponent health sounds",
         (const wchar*)L"Your X-ray ready sound", (const wchar*)L"Opponent X-ray ready sound",
-        (const wchar*)L"Wall hum", (const wchar*)L"Your corner slam", (const wchar*)L"Opponent corner slam",
+        (const wchar*)L"Wall hum",
         (const wchar*)L"Close menu" };
     wcpy(out, labels[i], max);
     int* b = i == MI_COMBO ? &g_comboReadout : i == MI_DAMAGE ? &g_damageNumbers : i == MI_AUTOREAD ? &g_autoRead : 0;
@@ -2265,8 +2263,6 @@ static void menu_preview(int i)
     case MI_S_XRAY_YOU:   snd_play_pan("xray_you", pyou, C_XRAY_YOU); break;
     case MI_S_XRAY_OPP:   snd_play_pan("xray_opponent", popp, C_XRAY_OPP); break;
     case MI_S_HUM:        g_humPreviewT = GetTickCount(); g_humPreviewPan = you; break;   /* menu_tick plays it */
-    case MI_S_CORNER_YOU: snd_play_pan("corner_you", you, C_CORNER_YOU); break;
-    case MI_S_CORNER_OPP: snd_play_pan("corner_opponent", opp, C_CORNER_OPP); break;
     case MI_S_MENU:       snd_play("menu_move"); break;
     }
 }

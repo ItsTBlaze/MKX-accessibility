@@ -59,7 +59,7 @@ def main(folder):
         return out
     write(folder, "xray_you", arp(262, 0.55, (1.0, 0.4, 0.2, 0.1)))
     write(folder, "xray_opponent", arp(784, 0.42, (1.0, 0.25)))
-    # walls: a soft knock when a fighter gets close to a wall, a hard double slam in the corner
+    # walls: knock() is kept for possible later use; the wall hum is below
     import random
     def knock(freq, dur, amp, decay, noise):
         rnd = random.Random(int(freq)); n = int(RATE * dur); out = []; lp = 0.0
@@ -78,8 +78,6 @@ def main(folder):
             out.append(amp * v * (1 - trem + trem * (0.5 + 0.5 * math.sin(2 * math.pi * 6 * t))))
         return out
     write(folder, "wall_loop", hum(110, 0.5, (1.0, 0.5, 0.25, 0.12), 0.35))
-    write(folder, "corner_you", seq(knock(110, 0.16, 0.8, 22, 1.8), silence(0.05), knock(90, 0.35, 0.85, 12, 2.0)))
-    write(folder, "corner_opponent", seq(knock(330, 0.14, 0.6, 26, 1.2), silence(0.05), knock(280, 0.3, 0.65, 14, 1.4)))
     # menu
     write(folder, "menu_open", sweep(500, 900, 0.12))
     write(folder, "menu_close", sweep(900, 500, 0.12))
