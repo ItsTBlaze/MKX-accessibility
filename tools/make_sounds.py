@@ -77,8 +77,7 @@ def main(folder):
             v = sum(h * math.sin(2 * math.pi * freq * (k + 1) * t) for k, h in enumerate(harm)) / sum(harm)
             out.append(amp * v * (1 - trem + trem * (0.5 + 0.5 * math.sin(2 * math.pi * 6 * t))))
         return out
-    write(folder, "wall_loop_you", hum(110, 0.5, (1.0, 0.5, 0.25, 0.12), 0.35))
-    write(folder, "wall_loop_opponent", hum(330, 0.35, (1.0, 0.3, 0.1), 0.35))
+    write(folder, "wall_loop", hum(110, 0.5, (1.0, 0.5, 0.25, 0.12), 0.35))
     write(folder, "corner_you", seq(knock(110, 0.16, 0.8, 22, 1.8), silence(0.05), knock(90, 0.35, 0.85, 12, 2.0)))
     write(folder, "corner_opponent", seq(knock(330, 0.14, 0.6, 26, 1.2), silence(0.05), knock(280, 0.3, 0.65, 14, 1.4)))
     # menu

@@ -14,7 +14,7 @@
    Everything is also written to MKXAccess.log next to the game exe. */
 #include "win.h"
 
-#define VERSION L"0.9.6"
+#define VERSION L"0.9.7"
 #define FOCUS_DELAY 70   /* ms to wait after focus moves, for descriptions to arrive */
 #define IMAGE_BASE 0x140000000ULL
 
@@ -1811,7 +1811,7 @@ typedef struct { const char* name; int tried; BYTE* raw; DWORD len; DWORD dataOf
 static Sound g_snd[] = {
     {"you75"}, {"you50"}, {"you25"}, {"opponent75"}, {"opponent50"}, {"opponent25"},
     {"menu_open"}, {"menu_close"}, {"menu_move"}, {"menu_edge"}, {"xray_you"}, {"xray_opponent"},
-    {"wall_loop_you"}, {"wall_loop_opponent"}, {"corner_you"}, {"corner_opponent"},
+    {"wall_loop"}, {"corner_you"}, {"corner_opponent"},
 };
 #define NSND (int)(sizeof(g_snd) / sizeof(g_snd[0]))
 static int g_volume = 80;   /* percent */
@@ -2101,18 +2101,20 @@ static int g_wallZone[2], g_wallSide[2];
 #define WALL_NEAR 0.15f     /* of the stage length: the steady sound starts */
 #define WALL_AT 0.05f       /* in the corner (checked against the log: sounds right) */
 #define WALL_BACK 0.03f     /* has to move this much further out before the slam can sound again */
-static void walls_quiet(void) { snd_loop(0, "", 0, 0); snd_loop(1, "", 0, 0); }
+static float g_humVol; static int g_humPan;
+static void walls_quiet(void) { snd_loop(0, "", 0, 0); }
 static void wall_tick(Fighter* f, int p, float len, DWORD now)
 {
-    if (!f->hasX || len < 100) { snd_loop(p, "", 0, 0); return; }
+    if (!f->hasX || len < 100) return;
     float left = f->x, right = len - f->x;
     int side = left <= right ? 0 : 1;            /* 0 left wall, 1 right wall */
     float dist = (side ? right : left) / len;     /* 0 at the wall, 0.5 mid stage */
     if (dist < 0) dist = 0;
     int mine = p == g_you, on = mine ? g_wallYou : g_wallOpp;
-    /* the steady sound: quiet as it starts, full volume in the corner */
+    /* the steady sound: quiet as it starts, full volume in the corner. One hum for both
+       fighters: whoever is closer to a wall decides how loud and from which side */
     float vol = dist < WALL_NEAR ? 0.12f + 0.88f * (1 - dist / WALL_NEAR) : 0;
-    snd_loop(p, mine ? "wall_loop_you" : "wall_loop_opponent", on ? vol : 0, side ? 1 : -1);
+    if (on && vol > g_humVol) { g_humVol = vol; g_humPan = side ? 1 : -1; }
     int zone = dist <= WALL_AT ? 2 : dist <= WALL_NEAR ? 1 : 0;
     int cur = g_wallZone[p];
     if (zone > cur) {
@@ -2161,7 +2163,9 @@ static void health_tick(DWORD now)
     }
     {   /* walls; and while testing, where everybody stands once a second */
         float len = *(float*)(g_base + (0x1430CFD5CULL - IMAGE_BASE));
+        g_humVol = 0;
         for (int p = 0; p < 2; p++) wall_tick(&f[p], p, len, now);
+        snd_loop(0, "wall_loop", g_humVol, g_humPan);
         static DWORD lastPos;
         if (now - lastPos >= 1000 && f[0].hasX && f[1].hasX) {
             lastPos = now;
@@ -2271,8 +2275,8 @@ static void menu_tick(DWORD now)
         else { snd_loop(0, g_rampName, 0, g_rampPan); g_rampName = 0; }
     }
     if (!g_testStep || now - g_testT < (g_testStep == 1 ? 0u : 1500u)) return;
-    static const char* names[12] = {"you75", "you50", "you25", "xray_you", "wall_loop_you", "corner_you",
-        "opponent75", "opponent50", "opponent25", "xray_opponent", "wall_loop_opponent", "corner_opponent"};
+    static const char* names[12] = {"you75", "you50", "you25", "xray_you", "wall_loop", "corner_you",
+        "opponent75", "opponent50", "opponent25", "xray_opponent", "wall_loop", "corner_opponent"};
     static const wchar* says[12] = { (const wchar*)L"You at 75 percent", (const wchar*)L"You at 50 percent", (const wchar*)L"You at 25 percent",
         (const wchar*)L"Your X-ray is ready", (const wchar*)L"You getting close to a wall", (const wchar*)L"You in the corner",
         (const wchar*)L"Opponent at 75 percent", (const wchar*)L"Opponent at 50 percent", (const wchar*)L"Opponent at 25 percent",
