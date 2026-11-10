@@ -53,8 +53,9 @@ These only work while the game window is in front.
 
 Every sound is a `.wav` file in the `MKXAccess Sounds` folder next to the mod, and
 any of them can be replaced (any 16-bit `.wav`, mono or stereo, any sample rate).
-Install adds missing sounds but never replaces one that is already there. The
-starter sounds are made by `tools/make_sounds.py`.
+Install adds missing sounds but never replaces one that has been customized. The
+health, X-ray and wall hum sounds were made by ItsTBlaze; the menu sounds are made
+by `tools/make_sounds.py`.
 
 ## Reporting problems
 

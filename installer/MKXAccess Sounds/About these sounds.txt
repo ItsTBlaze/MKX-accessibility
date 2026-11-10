@@ -7,14 +7,16 @@ their own volume. If a file is missing, that sound is just skipped.
 Restart the game after replacing a file. Any 16-bit .wav works, mono or
 stereo, at any sample rate.
 
-you75.wav        your health dropped to 75 percent (one low tone)
-you50.wav        your health dropped to 50 percent (two low tones)
-you25.wav        your health dropped to 25 percent (three hard low tones)
-opponent75.wav   your opponent dropped to 75 percent (one high ping)
-opponent50.wav   your opponent dropped to 50 percent (two high pings)
-opponent25.wav   your opponent dropped to 25 percent (three high pings)
-xray_you.wav     your super meter is full: X-ray ready (low rising notes)
-xray_opponent.wav  your opponent's X-ray is ready (high rising notes)
+you75.wav        your health dropped to 75 percent
+you50.wav        your health dropped to 50 percent
+you25.wav        your health dropped to 25 percent
+opponent75.wav   your opponent dropped to 75 percent
+opponent50.wav   your opponent dropped to 50 percent
+opponent25.wav   your opponent dropped to 25 percent
+                 (all six start out as the same health sound; it comes from the
+                 side of that fighter's health bar)
+xray_you.wav     your super meter is full: X-ray ready
+xray_opponent.wav  your opponent's X-ray is ready (starts out as the same sound)
 wall_loop.wav           steady hum while either fighter is close to a wall, louder the closer they
                         get, from that wall's side (it repeats, so a replacement should loop smoothly)
 menu_open.wav    the accessibility menu opened

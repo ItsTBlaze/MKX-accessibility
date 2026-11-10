@@ -53,12 +53,11 @@ Damage and combos
 - Ctrl+F10 turns the whole hit and combo readout off and on.
 
 Fight sounds
-Short sounds tell you what is happening in a fight. Your sounds are low,
-your opponent's are high.
-- Health: one tone when a fighter drops to 75 percent, two at 50
-  percent, three harder tones at 25 percent.
-- X-ray: four rising notes as soon as a fighter's super meter is full
-  and the X-ray can be used.
+Short sounds tell you what is happening in a fight. You and your
+opponent use the same sounds; the side they come from tells you who.
+- Health: a sound when a fighter drops to 75, 50 and 25 percent.
+- X-ray: a sound as soon as a fighter's super meter is full and the
+  X-ray can be used.
 - Health and X-ray sounds come from the side of that fighter's health
   bar: player 1 on the left, player 2 on the right.
 - Walls: a steady hum while a fighter is close to a wall, from that
@@ -70,7 +69,7 @@ your opponent's are high.
 - Every sound is a .wav file in the "MKXAccess Sounds" folder in the
   game folder, and you can replace any of them with your own. See
   "About these sounds.txt" in that folder. Install never replaces a
-  sound that is already there.
+  sound you have customized.
 
 Accessibility menu
 - Open it with F3, or hold Back and press Y on the controller. While it
