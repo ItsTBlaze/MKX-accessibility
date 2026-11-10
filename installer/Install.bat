@@ -34,9 +34,10 @@ copy /Y "LICENSE-NVDA.txt" "!GAME!\" >nul || goto :copyfail
 rem Sounds: add any that are missing, but never replace one already there (it may be
 rem someone's own sound). The list of sounds is always brought up to date.
 if not exist "!GAME!\MKXAccess Sounds\" mkdir "!GAME!\MKXAccess Sounds" || goto :copyfail
-rem The first built-in fight sounds (0.9.12) were replaced by new ones. A file that still
+rem The first built-in fight sounds (0.9.12) were replaced by new ones in 0.9.13. A file that still
 rem has its old built-in size was never customized, so it is updated.
-for %%E in (you75:45500 you50:63140 you25:62258 opponent75:32270 opponent50:48146 opponent25:50792 xray_you:64904 xray_opponent:64904 wall_loop:94010) do (
+rem (two sizes each: the 0.9.12 download and the earlier test copies)
+for %%E in (you75:39734 you50:57374 you25:56492 opponent75:26504 opponent50:42380 opponent25:45026 xray_you:59138 xray_opponent:59138 wall_loop:88244 you75:45500 you50:63140 you25:62258 opponent75:32270 opponent50:48146 opponent25:50792 xray_you:64904 xray_opponent:64904 wall_loop:94010) do (
     for /f "tokens=1,2 delims=:" %%a in ("%%E") do (
         if exist "!GAME!\MKXAccess Sounds\%%a.wav" (
             for %%Z in ("!GAME!\MKXAccess Sounds\%%a.wav") do if "%%~zZ"=="%%b" copy /Y "MKXAccess Sounds\%%a.wav" "!GAME!\MKXAccess Sounds\" >nul
