@@ -14,7 +14,7 @@
    Everything is also written to MKXAccess.log next to the game exe. */
 #include "win.h"
 
-#define VERSION L"0.9.15"
+#define VERSION L"0.9.16"
 #define FOCUS_DELAY 70   /* ms to wait after focus moves, for descriptions to arrive */
 #define IMAGE_BASE 0x140000000ULL
 
@@ -44,7 +44,7 @@ static gotoLabel_t   o_gotoAndPlay, o_gotoAndStop;
 
 /* ------------------------------------------------------------------ */
 /* event queue: game thread -> worker thread                           */
-enum { EV_TEXT = 1, EV_HTML, EV_VTEXT, EV_VHTML, EV_FOCUS, EV_SETFOCUS, EV_GRID, EV_ANIM, EV_LABEL, EV_COMBOEND, EV_INVITE, EV_PAD, EV_LOBBYINVITE, EV_MENUPAD, EV_METERFULL, EV_FDIAG };
+enum { EV_TEXT = 1, EV_HTML, EV_VTEXT, EV_VHTML, EV_FOCUS, EV_SETFOCUS, EV_GRID, EV_ANIM, EV_LABEL, EV_COMBOEND, EV_INVITE, EV_PAD, EV_LOBBYINVITE, EV_MENUPAD, EV_METERFULL, EV_FRAMES };
 #define PATHMAX 192
 #define TEXTMAX 512
 typedef struct { int type; u64 id; DWORD t; int x, y; wchar path[PATHMAX]; wchar text[TEXTMAX]; } Event;
@@ -353,70 +353,65 @@ static void hk_setMeter(void* self, float v)
     if (before < 0.999f && after >= 0.999f) { Event* e = q_begin(); if (e) { e->type = EV_METERFULL; e->id = (u64)self; q_end(); } }
 }
 
-/* frame data research (test builds): PLAYER_INFO::Tick runs once per game tick for each
-   player (from FG_GAME_INFO::Tick). After it, the fighter's attack and reaction state is
-   compared with the last tick and every change is logged with the game tick number
-   (GAME_INFO +0xD0, GetGameTickCounter). FGCharacterObj: +0xC78 GetAttackState, +0x1010
-   GetLastStartAttackVMTick, +0x1054 GetFirstHitDetected, +0xA2C bit 0x400 / +0xF0C
-   IsAlreadyReacting, +0xA38 life. */
+/* frame data in practice: PLAYER_INFO::Tick runs once per game tick (60 a second) for each
+   player, from FG_GAME_INFO::Tick. After player 2's tick the two fighters are compared:
+   FGCharacterObj +0xA2C is the fighter's state; bit 0x4000 is set while it can't act
+   (0x52xx attacking, 0x46xx hit reaction, 0x4Axx block reaction, 0x62xx knocked down) and
+   0x800 marks blocking. +0x1010 is the tick the current attack started
+   (GetLastStartAttackVMTick), +0x790 non-zero while knocked down / in the air.
+   When your attack connects (the dummy goes from free to busy while you are busy):
+     start-up  = this tick - your attack's start tick
+   then, once both are free again:
+     advantage = tick the dummy became free - tick you became free
+   Checked against the move list: Mileena's Slap measured start-up 11, plus 24 on hit and
+   plus 2 on block, as listed. Only in practice (FG_GAME_INFO +0x198C GetGameMode == 2). */
 typedef void (*playerTick_t)(void*);
 static playerTick_t o_playerTick;
-typedef struct { int atk, start, hit, react, f0c, a2c, a28, f20, bo, bos, blk, c790; float life; int valid; } FdState;
-static FdState g_fd[2];
-static void fd_num(wchar* d, int* n, long long v)
-{
-    if (v < 0) { d[(*n)++] = '-'; v = -v; }
-    wchar t[24]; int k = 0; do { t[k++] = (wchar)('0' + v % 10); v /= 10; } while (v && k < 23);
-    while (k) d[(*n)++] = t[--k];
-}
-static void fd_put(wchar* d, int* n, const char* s) { while (*s) d[(*n)++] = (wchar)*s++; }
+#define FD_PRACTICE_MODE 2
+static int g_frameData = 1;   /* menu: frame data in practice */
+static volatile int g_fdYou;  /* which player is you (set by the worker) */
+typedef struct { int st, start, c790, ok; } FdNow;
+static FdNow g_fdNow[2];
+static int g_fdActive, g_fdStartup, g_fdBlock, g_fdKd, g_fdYouFree, g_fdOppFree, g_fdBegin, g_fdPrevOppBusy;
 static void hk_playerTick(void* info)
 {
     o_playerTick(info);
+    if (!g_frameData) { g_fdActive = 0; return; }
     BYTE* pi = (BYTE*)info;
     u64 gg = *(u64*)(g_base + (0x143316848ULL - IMAGE_BASE));
     u64 fg = *(u64*)(g_base + (0x1430DBA00ULL - IMAGE_BASE));
-    if (!pi || !gg || !fg || !readable(pi + 0x20, 16)) return;
+    if (!pi || !gg || !fg) return;
     int p = *(u64*)(fg + 0x1968) == (u64)pi ? 0 : *(u64*)(fg + 0x1970) == (u64)pi ? 1 : -1;
     if (p < 0) return;
+    FdNow* n = &g_fdNow[p]; n->ok = 0;
     BYTE* obj = *(BYTE**)(pi + 0x20);
     int h = *(int*)(pi + 0x28);
-    if (!obj || h == -1 || !readable(obj, 0x1060) || *(DWORD*)(obj + 8) != (DWORD)h) { g_fd[p].valid = 0; return; }
-    FdState n;
-    n.atk = *(int*)(obj + 0xC78); n.start = *(int*)(obj + 0x1010); n.hit = *(int*)(obj + 0x1054);
-    n.a2c = *(int*)(obj + 0xA2C); n.f0c = *(int*)(obj + 0xF0C);
-    n.react = (n.a2c & 0x400) || n.f0c; n.life = *(float*)(obj + 0xA38); n.valid = 1;
-    if (!readable(obj, 0x1100)) return;
-    n.a28 = *(int*)(obj + 0xA28); n.c790 = *(int*)(obj + 0x790);
-    n.f20 = 0; for (int i = 0; i < 4; i++) n.f20 |= *(int*)(obj + 0xF20 + 8 * i);
-    n.bo = *(int*)(obj + 0x1048); n.bos = *(int*)(obj + 0x104C);
-    /* FGCharacterObj::CanIBeInABlockingState without calling it (it can touch the
-       online desync tracker): no "can't block" flags, not in a few states, alive */
-    n.blk = !(n.f20 & ((1 << 0x13) | 0x40)) && n.a2c != 0x1201 && n.a2c != 0x2013 && !(n.a28 & 8) && n.a2c != 0x4605 && !n.c790 &&
-            !*(int*)(obj + 0x1098) && !*(int*)(obj + 0x109C) && !*(int*)(obj + 0x10C8) && !*(int*)(obj + 0x10F8) && n.life > 0;
-    FdState* o = &g_fd[p];
-    if (o->valid && n.atk == o->atk && n.start == o->start && n.hit == o->hit && n.react == o->react && n.f0c == o->f0c && n.life == o->life &&
-        n.a2c == o->a2c && n.f20 == o->f20 && n.bo == o->bo && n.bos == o->bos && n.blk == o->blk && n.a28 == o->a28 && n.c790 == o->c790) return;
-    *o = n;
-    Event* e = q_begin(); if (!e) return;
-    e->type = EV_FDIAG;
-    int k = 0; wchar* d = e->text;
-    fd_put(d, &k, p ? "P2 tick " : "P1 tick "); fd_num(d, &k, *(int*)(gg + 0xD0));
-    fd_put(d, &k, " atk "); fd_num(d, &k, n.atk);
-    fd_put(d, &k, " start "); fd_num(d, &k, n.start);
-    fd_put(d, &k, " hit "); fd_num(d, &k, n.hit);
-    fd_put(d, &k, " react "); fd_num(d, &k, n.react);
-    fd_put(d, &k, " f0c "); fd_num(d, &k, n.f0c);
-    fd_put(d, &k, " a2c "); fd_num(d, &k, n.a2c);
-    fd_put(d, &k, " life "); fd_num(d, &k, (long long)(n.life * 1000));
-    fd_put(d, &k, " blk "); fd_num(d, &k, n.blk);
-    fd_put(d, &k, " f20 "); fd_num(d, &k, (unsigned)n.f20);
-    fd_put(d, &k, " a28 "); fd_num(d, &k, n.a28);
-    fd_put(d, &k, " bo "); fd_num(d, &k, n.bo);
-    fd_put(d, &k, " bos "); fd_num(d, &k, n.bos);
-    fd_put(d, &k, " c790 "); fd_num(d, &k, n.c790);
-    d[k] = 0;
-    q_end();
+    if (!obj || h == -1 || *(DWORD*)(obj + 8) != (DWORD)h) return;
+    n->st = *(int*)(obj + 0xA2C); n->start = *(int*)(obj + 0x1010); n->c790 = *(int*)(obj + 0x790); n->ok = 1;
+    if (p != 1) return;   /* both fighters have ticked: compare */
+    if (*(int*)(fg + 0x198C) != FD_PRACTICE_MODE || !g_fdNow[0].ok) { g_fdActive = 0; return; }
+    int tick = *(int*)(gg + 0xD0);
+    int you = g_fdYou & 1, opp = !you;
+    FdNow* y = &g_fdNow[you]; FdNow* o = &g_fdNow[opp];
+    int yb = (y->st & 0x4000) != 0, ob = (o->st & 0x4000) != 0;
+    if (!g_fdActive) {
+        if (ob && !g_fdPrevOppBusy && yb && (y->st & 0x1000)) {   /* your attack connected */
+            g_fdActive = 1; g_fdBegin = tick; g_fdStartup = tick - y->start;
+            g_fdBlock = 0; g_fdKd = 0; g_fdYouFree = g_fdOppFree = 0;
+        }
+    }
+    if (g_fdActive) {
+        if (o->st & 0x800) g_fdBlock = 1;
+        if (o->c790 || (o->st & 0x2000)) g_fdKd = 1;
+        if (yb) g_fdYouFree = 0; else if (!g_fdYouFree) g_fdYouFree = tick;   /* a string: busy again */
+        if (ob) g_fdOppFree = 0; else if (!g_fdOppFree) g_fdOppFree = tick;
+        if (g_fdYouFree && g_fdOppFree) {
+            g_fdActive = 0;
+            Event* e = q_begin();
+            if (e) { e->type = EV_FRAMES; e->x = g_fdStartup; e->y = g_fdOppFree - g_fdYouFree; e->id = (u64)(g_fdBlock | (g_fdKd << 1)); q_end(); }
+        } else if (tick - g_fdBegin > 600) g_fdActive = 0;   /* 10 seconds: give up */
+    }
+    g_fdPrevOppBusy = ob;
 }
 
 static HookDef g_hooks[] = {
@@ -893,6 +888,41 @@ static void combo_finished(Event* ev)
     if (c->dirty) c->ended = 1;
 }
 
+static void wcat_u(wchar* d, u64 v, int max) { wchar num[24]; utoa_w(v, num, 10, 1); wcat(d, num, max); }
+/* frame data result from hk_playerTick: said together with the hit's level and damage
+   when that is still waiting, otherwise right after what is being said */
+static wchar g_frameLine[96]; static DWORD g_frameT;
+static void frames_result(int startup, int adv, int flags)
+{
+    static wchar line[96]; line[0] = 0;
+    if (startup > 0 && startup < 200) { wcpy(line, (const wchar*)L"start-up ", 96); wcat_u(line, (u64)startup, 96); }
+    if (line[0]) wcat(line, (const wchar*)L", ", 96);
+    if (flags & 2) wcat(line, (const wchar*)L"knockdown", 96);
+    else {
+        if (adv > 0) wcat(line, (const wchar*)L"plus ", 96); else if (adv < 0) wcat(line, (const wchar*)L"minus ", 96);
+        wcat_u(line, (u64)(adv < 0 ? -adv : adv), 96);
+        wcat(line, (flags & 1) ? (const wchar*)L" on block" : (const wchar*)L" on hit", 96);
+    }
+    logf3((const wchar*)L"FRAMES", 0, line);
+    wcpy(g_frameLine, line, 96); g_frameT = GetTickCount();
+}
+static void frames_tick(DWORD now)
+{
+    if (!g_frameLine[0]) return;
+    int waiting = g_hitPending || g_combo[0].dirty || g_combo[1].dirty;
+    if (waiting && now - g_frameT < 4000) return;   /* goes out with the hit (fight_tick) */
+    speak(g_frameLine, 0);
+    g_frameLine[0] = 0;
+}
+/* add the frame data to a hit or combo line about to be said */
+static void frames_join(wchar* line, int max)
+{
+    if (!g_frameLine[0]) return;
+    if (line[0]) wcat(line, (const wchar*)L", ", max);
+    wcat(line, g_frameLine, max);
+    g_frameLine[0] = 0;
+}
+
 static void fight_tick(DWORD now)
 {
     /* a combo that just grew swallows the hit that started it */
@@ -909,7 +939,9 @@ static void fight_tick(DWORD now)
             if (line[0]) wcat(line, (const wchar*)L", ", 96);
             wcat(line, pct, 96);
         }
-        if (line[0] && g_comboReadout) speak(line, 1);
+        if (!g_comboReadout) line[0] = 0;
+        frames_join(line, 96);
+        if (line[0]) speak(line, 1);
     }
     for (int s = 0; s < 2; s++) {
         Combo* c = &g_combo[s];
@@ -932,7 +964,9 @@ static void fight_tick(DWORD now)
             wcpy(line, (const wchar*)L"throw", 128);
             if (c->dmg[0] && g_damageNumbers) { wchar pct[48]; say_percent(c->dmg, pct, 48); wcat(line, (const wchar*)L", ", 128); wcat(line, pct, 128); }
             g_seq[0] = 0; g_seqN = 0;
-            if (g_comboReadout) speak(line, 1);
+            if (!g_comboReadout) line[0] = 0;
+            frames_join(line, 128);
+            if (line[0]) speak(line, 1);
             continue;
         }
         wcpy(line, c->hits, 128); wcat(line, (const wchar*)L" hit combo", 128);
@@ -942,7 +976,9 @@ static void fight_tick(DWORD now)
         wcpy(full, line, 400);
         if (s == 0 && g_seqN == hits && (int)(c->t - g_seqT) >= -100 && (int)(c->t - g_seqT) <= 100) { wcat(full, (const wchar*)L", ", 400); wcat(full, g_seq, 400); }
         if (s == 0) { g_seq[0] = 0; g_seqN = 0; }   /* this string is done */
-        if (g_comboReadout) speak(full, 1);
+        if (!g_comboReadout) full[0] = 0;
+        if (s == 0) frames_join(full, 400);   /* your combo */
+        if (full[0]) speak(full, 1);
     }
 }
 
@@ -1954,7 +1990,6 @@ static int g_volume = 80;   /* percent: everything the mod plays */
 enum { C_HEALTH_YOU, C_HEALTH_OPP, C_XRAY_YOU, C_XRAY_OPP, C_HUM, C_MENU, NCAT };
 static int g_cv[NCAT] = { -1, -1, -1, -1, -1, -1 };   /* -1 until loaded: then 100 or the old on/off */
 static int g_stereo = 1;    /* health and X-ray sounds come from the side of that fighter's health bar (always) */
-static void wcat_u(wchar* d, u64 v, int max) { wchar num[24]; utoa_w(v, num, 10, 1); wcat(d, num, max); }
 static unsigned rd32(const BYTE* p) { return p[0] | (p[1] << 8) | (p[2] << 16) | ((unsigned)p[3] << 24); }
 static void wr32(BYTE* p, unsigned v) { p[0] = (BYTE)v; p[1] = (BYTE)(v >> 8); p[2] = (BYTE)(v >> 16); p[3] = (BYTE)(v >> 24); }
 static void wr16(BYTE* p, unsigned v) { p[0] = (BYTE)v; p[1] = (BYTE)(v >> 8); }
@@ -2130,7 +2165,7 @@ static struct { const char* key; int* v; int lo, hi; int save; } g_setDefs[] = {
     {"sound_health_you", &g_cv[C_HEALTH_YOU], 0, 100, 1}, {"sound_health_opponent", &g_cv[C_HEALTH_OPP], 0, 100, 1},
     {"sound_xray_you", &g_cv[C_XRAY_YOU], 0, 100, 1}, {"sound_xray_opponent", &g_cv[C_XRAY_OPP], 0, 100, 1},
     {"sound_wall_hum", &g_cv[C_HUM], 0, 100, 1}, {"sound_menu", &g_cv[C_MENU], 0, 100, 1},
-    {"combo_readout", &g_comboReadout, 0, 1, 1}, {"damage_numbers", &g_damageNumbers, 0, 1, 1}, {"auto_read", &g_autoRead, 0, 1, 1},
+    {"combo_readout", &g_comboReadout, 0, 1, 1}, {"frame_data", &g_frameData, 0, 1, 1}, {"damage_numbers", &g_damageNumbers, 0, 1, 1}, {"auto_read", &g_autoRead, 0, 1, 1},
     {"health_you", &g_oldHealthYou, 0, 1, 0}, {"health_opponent", &g_oldHealthOpp, 0, 1, 0}, {"xray_you", &g_oldXrayYou, 0, 1, 0},
     {"xray_opponent", &g_oldXrayOpp, 0, 1, 0}, {"wall_you", &g_oldWallYou, 0, 1, 0}, {"wall_opponent", &g_oldWallOpp, 0, 1, 0},
 };
@@ -2301,6 +2336,7 @@ static void health_tick(DWORD now)
     if (f[0].obj != g_hpObj[0] || f[1].obj != g_hpObj[1]) {   /* a new fight: work out who is who, no cue */
         int local0 = f[0].pad >= 0 && f[0].pad <= 7 && !f[0].ai, local1 = f[1].pad >= 0 && f[1].pad <= 7 && !f[1].ai;
         g_you = g_side ? g_side - 1 : (local1 && !local0) ? 1 : 0;
+        g_fdYou = g_you;
         static wchar line[256]; line[0] = 0;
         for (int p = 0; p < 2; p++) {
             wcat(line, p ? (const wchar*)L" | P2 life " : (const wchar*)L"P1 life ", 256); wcat_u(line, (u64)f[p].life, 256);
@@ -2370,7 +2406,7 @@ static void health_tick(DWORD now)
 /* Up/down choose, left/right change. On a sound, left/right set its volume in steps of
    10 (0 is off) and play the sound at the new volume, from the side it comes from in a
    fight. A/Enter on a sound just plays it. */
-enum { MI_AUTOREAD, MI_COMBO, MI_DAMAGE, MI_S_MENU, MI_VOLUME,
+enum { MI_AUTOREAD, MI_COMBO, MI_DAMAGE, MI_FRAMES, MI_S_MENU, MI_VOLUME,
        MI_S_HEALTH_YOU, MI_S_HEALTH_OPP, MI_S_XRAY_YOU, MI_S_XRAY_OPP, MI_S_HUM,
        MI_CLOSE, MI_COUNT };
 static int g_menuShown, g_menuItem, g_menuHinted;
@@ -2380,13 +2416,14 @@ static void menu_line(int i, wchar* out, int max, int withPos)
 {
     static const wchar* labels[MI_COUNT] = {
         (const wchar*)L"Auto read", (const wchar*)L"Hit and combo readout", (const wchar*)L"Combo damage numbers",
+        (const wchar*)L"Frame data in practice",
         (const wchar*)L"Menu sounds", (const wchar*)L"Overall sound volume",
         (const wchar*)L"Your health sounds", (const wchar*)L"Opponent health sounds",
         (const wchar*)L"Your X-ray ready sound", (const wchar*)L"Opponent X-ray ready sound",
         (const wchar*)L"Wall hum",
         (const wchar*)L"Close menu" };
     wcpy(out, labels[i], max);
-    int* b = i == MI_COMBO ? &g_comboReadout : i == MI_DAMAGE ? &g_damageNumbers : i == MI_AUTOREAD ? &g_autoRead : 0;
+    int* b = i == MI_COMBO ? &g_comboReadout : i == MI_FRAMES ? &g_frameData : i == MI_DAMAGE ? &g_damageNumbers : i == MI_AUTOREAD ? &g_autoRead : 0;
     if (b) wcat(out, *b ? (const wchar*)L", on" : (const wchar*)L", off", max);
     int c = item_cat(i), v = i == MI_VOLUME ? g_volume : c >= 0 ? g_cv[c] : -1;
     if (v == 0) wcat(out, (const wchar*)L", off", max);
@@ -2441,7 +2478,7 @@ static void menu_move(int d)
 static void menu_change(int d, int activate)
 {
     int i = g_menuItem, c = item_cat(i);
-    int* b = i == MI_COMBO ? &g_comboReadout : i == MI_DAMAGE ? &g_damageNumbers : i == MI_AUTOREAD ? &g_autoRead : 0;
+    int* b = i == MI_COMBO ? &g_comboReadout : i == MI_FRAMES ? &g_frameData : i == MI_DAMAGE ? &g_damageNumbers : i == MI_AUTOREAD ? &g_autoRead : 0;
     if (i == MI_VOLUME || c >= 0) {
         if (activate) { menu_preview(i); return; }   /* A/Enter: just listen */
         int* v = i == MI_VOLUME ? &g_volume : &g_cv[c];
@@ -2533,6 +2570,7 @@ static void challenge_tick(DWORD now);
 static void speech_tick(DWORD now)
 {
     fight_tick(now);
+    frames_tick(now);
     challenge_tick(now);
     entry_tick(now);
     if (g_valEntry && now - g_valT >= 40) {
@@ -2593,7 +2631,7 @@ static DWORD WINAPI worker(void* arg)
             else if (ev.type == EV_LOBBYINVITE) steam_invite_received(&ev);
             else if (ev.type == EV_MENUPAD) menu_pad(ev.x);
             else if (ev.type == EV_METERFULL) meter_full(ev.id);
-            else if (ev.type == EV_FDIAG) logf3((const wchar*)L"FD", 0, ev.text);
+            else if (ev.type == EV_FRAMES) frames_result(ev.x, ev.y, (int)ev.id);
             else if (ev.type == EV_PAD && (ev.x & PAD_BACK)) steam_accept_invite();
             else if (ev.type == EV_PAD) {
                 if (ev.x & PAD_DOWN) steam_invite_key(0, 0);
