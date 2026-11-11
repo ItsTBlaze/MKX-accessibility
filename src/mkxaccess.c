@@ -14,7 +14,7 @@
    Everything is also written to MKXAccess.log next to the game exe. */
 #include "win.h"
 
-#define VERSION L"0.9.21"
+#define VERSION L"0.9.22"
 #define FOCUS_DELAY 70   /* ms to wait after focus moves, for descriptions to arrive */
 #define IMAGE_BASE 0x140000000ULL
 
@@ -346,7 +346,7 @@ typedef void (*setMeter_t)(void*, float);
 static setMeter_t o_setMeter;
 static void hk_setMeter(void* self, float v)
 {
-    if (!self || !readable((BYTE*)self + 0x28C, 4)) { o_setMeter(self, v); return; }
+    if (!self) { o_setMeter(self, v); return; }   /* the game's own PLAYER_INFO: no memory check needed */
     float before = *(float*)((BYTE*)self + 0x28C);
     o_setMeter(self, v);
     float after = *(float*)((BYTE*)self + 0x28C);
@@ -383,6 +383,7 @@ static void hk_playerTick(void* info)
     u64 gg = *(u64*)(g_base + (0x143316848ULL - IMAGE_BASE));
     u64 fg = *(u64*)(g_base + (0x1430DBA00ULL - IMAGE_BASE));
     if (!pi || !gg || !fg) return;
+    if (*(int*)(fg + 0x198C) != FD_PRACTICE_MODE) { g_fdActive = 0; return; }   /* outside practice: nothing more */
     int p = *(u64*)(fg + 0x1968) == (u64)pi ? 0 : *(u64*)(fg + 0x1970) == (u64)pi ? 1 : -1;
     if (p < 0) return;
     FdNow* n = &g_fdNow[p]; n->ok = 0;
@@ -392,7 +393,7 @@ static void hk_playerTick(void* info)
     n->st = *(int*)(obj + 0xA2C); n->start = *(int*)(obj + 0x1010); n->c790 = *(int*)(obj + 0x790); n->ok = 1;
     n->life = *(float*)(obj + 0xA38); n->max = *(float*)(obj + 0xA3C);
     if (p != 1) return;   /* both fighters have ticked: compare */
-    if (*(int*)(fg + 0x198C) != FD_PRACTICE_MODE || !g_fdNow[0].ok) { g_fdActive = 0; return; }
+    if (!g_fdNow[0].ok) { g_fdActive = 0; return; }
     int tick = *(int*)(gg + 0xD0);
     int you = g_fdYou & 1, opp = !you;
     FdNow* y = &g_fdNow[you]; FdNow* o = &g_fdNow[opp];
@@ -2431,7 +2432,7 @@ static void health_tick(DWORD now)
         g_lifeKnown = 1; g_wallQuiet = 0;
         return;
     }
-    {   /* walls; and while testing, where everybody stands once a second */
+    {   /* walls */
         float len = *(float*)(g_base + (0x1430CFD5CULL - IMAGE_BASE));
         g_humVol = 0;
         for (int p = 0; p < 2; p++) wall_tick(&f[p], p, len, now);
@@ -2443,15 +2444,6 @@ static void health_tick(DWORD now)
         }
         if (g_wallQuiet) g_humVol = 0;
         if (!g_menuOpen) snd_loop(0, "wall_loop", g_cv[C_HUM] > 0 ? g_humVol * g_cv[C_HUM] / 100 : 0, g_humPan);   /* the menu uses it for its preview */
-        static DWORD lastPos;
-        if (now - lastPos >= 1000 && f[0].hasX && f[1].hasX) {
-            lastPos = now;
-            static wchar line[96]; line[0] = 0;
-            wcat(line, (const wchar*)L"length ", 96); wcat_u(line, (u64)(len > 0 ? len : 0), 96);
-            wcat(line, (const wchar*)L" P1 ", 96); wcat_u(line, (u64)(f[0].x > 0 ? f[0].x : 0), 96);
-            wcat(line, (const wchar*)L" P2 ", 96); wcat_u(line, (u64)(f[1].x > 0 ? f[1].x : 0), 96);
-            logf3((const wchar*)L"POS", 0, line);
-        }
     }
     for (int p = 0; p < 2; p++) {   /* X-ray ready: the meter just filled */
         float m = f[p].meter;

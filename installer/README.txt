@@ -1,4 +1,4 @@
-MKX Access 0.9.13 - screen reader support for Mortal Kombat X
+MKX Access 0.9.22 - screen reader support for Mortal Kombat X
 =============================================================
 
 MKX Access makes Mortal Kombat X (Steam, PC) speak through the NVDA
@@ -32,8 +32,30 @@ Pause menu and move list
 - Each move's name, its input in words, and its attack type.
   Button codes are turned into words, for example:
   "Spear, back forward front punch" or "Low Poke, down front punch, Low".
-- Move list section tabs, such as "SPECIAL MOVES".
+- In practice, each move's frame data after its name: "Slap, front
+  punch, High, start-up 11, active 3, recovery 13, plus 2 on block,
+  plus 24 on hit, cancel 20, damage 2 percent, block damage 0.4
+  percent". Values the game marks N/A are left out.
+- Changing page says the page first: "SPECIAL MOVES, Tele-Kick, ...".
 - Fatalities you haven't unlocked yet say "hidden" instead of their input.
+
+Frame data in practice
+After each of your attacks that hits or is blocked, in practice mode only:
+- Detailed: start-up and advantage, for example "start-up 11, plus 24
+  on hit" or "start-up 11, plus 2 on block, block damage 0.4 percent".
+  With the hit and combo readout off it also says the hit count and
+  damage. A string counts as one: the first hit's start-up and the
+  advantage after the last hit.
+- Plus and minus only: just the advantage, "plus 24 on hit".
+- A knockdown says so before the advantage: "knockdown, plus 58 on
+  hit". After a knockdown the number depends on how fast the dummy
+  gets up; set the dummy's Getup Mode to its fastest to compare with
+  the move list.
+- Active frames, recovery and cancel can't be measured from a hit;
+  the move list has them.
+- Choose the style in the accessibility menu (Frame data in practice:
+  detailed, plus and minus only, off). Ctrl+Shift+F10 turns it off and
+  back on.
 
 Damage and combos
 - In practice mode, each single hit with its level and damage:
@@ -77,7 +99,7 @@ Accessibility menu
 - Up and down choose, left and right change, B or Escape closes (or F3,
   or Back and Y again).
 - In order: Auto read, Hit and combo readout, Combo damage numbers,
-  Menu sounds, Overall sound volume, Your health sounds, Opponent
+  Frame data in practice, Menu sounds, Overall sound volume, Your health sounds, Opponent
   health sounds, Your X-ray ready sound, Opponent X-ray ready sound,
   Wall hum, Close menu.
 - On a sound, left and right set its volume in steps of 10 percent and
@@ -185,6 +207,7 @@ HOTKEYS (only while the game window is in front)
   F9  say which version of the mod is running
   F10 turn damage numbers on or off (hit levels and combos stay)
   Ctrl+F10 turn the hit and combo readout on or off
+  Ctrl+Shift+F10 turn frame data in practice on or off
   F11 next friend to invite, Shift+F11 previous, Ctrl+F11 send invite
       (Ctrl+F11 accepts when a friend has invited you)
 

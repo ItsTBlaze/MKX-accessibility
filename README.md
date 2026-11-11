@@ -11,13 +11,17 @@ and X-ray sounds come from the side of that fighter's health bar; the wall hum
 comes from the wall's side. An accessibility menu (F3, or hold Back and press Y)
 sets the volume of each sound and the readout options.
 
-Status: early testing (version 0.9.13). Feedback is very welcome; see
+In practice mode it reads frame data: each move's full frame data in the move list,
+and after each of your attacks the measured start-up and advantage on hit or block
+("start-up 11, plus 24 on hit"), detailed or plus and minus only.
+
+Status: early testing (version 0.9.22). Feedback is very welcome; see
 [Reporting problems](#reporting-problems).
 
 ## Install
 
 1. Download **[MKXAccess.zip](https://github.com/ItsTBlaze/MKX-accessibility/raw/main/download/MKXAccess.zip)**.
-   This link always gets the newest version (currently 0.9.13).
+   This link always gets the newest version (currently 0.9.22).
 2. Unzip it, and make sure Mortal Kombat X is closed.
 3. Open the unzipped MKXAccess folder and run **Install**. It finds the game on its
    own and tells you when it's done. Windows may ask whether to run a file from the
@@ -47,6 +51,7 @@ These only work while the game window is in front.
 | F9 | Say which version of the mod is running |
 | F10 | Turn damage numbers on or off (hit levels and combo counts stay) |
 | Ctrl+F10 | Turn the hit and combo readout on or off |
+| Ctrl+Shift+F10 | Turn frame data in practice on or off |
 | F11 | Next Steam friend to invite (Shift+F11 previous, Ctrl+F11 send the invite). On the invite screen, also D-pad down / up and A on the controller. When a friend invites you, Ctrl+F11 or the controller's Back button accepts |
 
 ## Sounds
