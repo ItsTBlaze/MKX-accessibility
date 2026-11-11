@@ -14,7 +14,7 @@
    Everything is also written to MKXAccess.log next to the game exe. */
 #include "win.h"
 
-#define VERSION L"0.9.18"
+#define VERSION L"0.9.19"
 #define FOCUS_DELAY 70   /* ms to wait after focus moves, for descriptions to arrive */
 #define IMAGE_BASE 0x140000000ULL
 
@@ -368,7 +368,8 @@ static void hk_setMeter(void* self, float v)
 typedef void (*playerTick_t)(void*);
 static playerTick_t o_playerTick;
 #define FD_PRACTICE_MODE 2
-static int g_frameData = 1;   /* menu: frame data in practice */
+static int g_frameData = 1;   /* menu: frame data in practice: 0 off, 1 detailed, 2 plus and minus only */
+static int g_frameLast = 1;   /* the style Ctrl+Shift+F10 turns back on */
 static volatile int g_fdYou;  /* which player is you (set by the worker) */
 typedef struct { int st, start, c790, ok; } FdNow;
 static FdNow g_fdNow[2];
@@ -895,9 +896,9 @@ static wchar g_frameLine[96]; static DWORD g_frameT;
 static void frames_result(int startup, int adv, int flags)
 {
     static wchar line[96]; line[0] = 0;
-    if (startup > 0 && startup < 200) { wcpy(line, (const wchar*)L"start-up ", 96); wcat_u(line, (u64)startup, 96); }
+    if (startup > 0 && startup < 200 && g_frameData != 2) { wcpy(line, (const wchar*)L"start-up ", 96); wcat_u(line, (u64)startup, 96); }   /* detailed only */
     if (line[0]) wcat(line, (const wchar*)L", ", 96);
-    if (flags & 2) wcat(line, (const wchar*)L"knockdown", 96);
+    if (flags & 2) wcat(line, (const wchar*)L"knockdown", 96);   /* both styles */
     else {
         if (adv > 0) wcat(line, (const wchar*)L"plus ", 96); else if (adv < 0) wcat(line, (const wchar*)L"minus ", 96);
         wcat_u(line, (u64)(adv < 0 ? -adv : adv), 96);
@@ -2206,7 +2207,7 @@ static struct { const char* key; int* v; int lo, hi; int save; } g_setDefs[] = {
     {"sound_health_you", &g_cv[C_HEALTH_YOU], 0, 100, 1}, {"sound_health_opponent", &g_cv[C_HEALTH_OPP], 0, 100, 1},
     {"sound_xray_you", &g_cv[C_XRAY_YOU], 0, 100, 1}, {"sound_xray_opponent", &g_cv[C_XRAY_OPP], 0, 100, 1},
     {"sound_wall_hum", &g_cv[C_HUM], 0, 100, 1}, {"sound_menu", &g_cv[C_MENU], 0, 100, 1},
-    {"combo_readout", &g_comboReadout, 0, 1, 1}, {"frame_data", &g_frameData, 0, 1, 1}, {"damage_numbers", &g_damageNumbers, 0, 1, 1}, {"auto_read", &g_autoRead, 0, 1, 1},
+    {"combo_readout", &g_comboReadout, 0, 1, 1}, {"frame_data", &g_frameData, 0, 2, 1}, {"damage_numbers", &g_damageNumbers, 0, 1, 1}, {"auto_read", &g_autoRead, 0, 1, 1},
     {"health_you", &g_oldHealthYou, 0, 1, 0}, {"health_opponent", &g_oldHealthOpp, 0, 1, 0}, {"xray_you", &g_oldXrayYou, 0, 1, 0},
     {"xray_opponent", &g_oldXrayOpp, 0, 1, 0}, {"wall_you", &g_oldWallYou, 0, 1, 0}, {"wall_opponent", &g_oldWallOpp, 0, 1, 0},
 };
@@ -2216,6 +2217,7 @@ static void settings_defaults(void)
     int* old[NCAT] = { &g_oldHealthYou, &g_oldHealthOpp, &g_oldXrayYou, &g_oldXrayOpp, 0, 0 };
     for (int c = 0; c < NCAT; c++) if (g_cv[c] < 0) g_cv[c] = old[c] && *old[c] == 0 ? 0 : 100;
     if (g_cv[C_HUM] < 0) g_cv[C_HUM] = 100;
+    if (g_frameData) g_frameLast = g_frameData;
     if (g_oldWallYou == 0 && g_oldWallOpp == 0 && g_cv[C_HUM] == 100) g_cv[C_HUM] = 0;
 }
 #define NSET (int)(sizeof(g_setDefs) / sizeof(g_setDefs[0]))
@@ -2464,8 +2466,9 @@ static void menu_line(int i, wchar* out, int max, int withPos)
         (const wchar*)L"Wall hum",
         (const wchar*)L"Close menu" };
     wcpy(out, labels[i], max);
-    int* b = i == MI_COMBO ? &g_comboReadout : i == MI_FRAMES ? &g_frameData : i == MI_DAMAGE ? &g_damageNumbers : i == MI_AUTOREAD ? &g_autoRead : 0;
+    int* b = i == MI_COMBO ? &g_comboReadout : i == MI_DAMAGE ? &g_damageNumbers : i == MI_AUTOREAD ? &g_autoRead : 0;
     if (b) wcat(out, *b ? (const wchar*)L", on" : (const wchar*)L", off", max);
+    if (i == MI_FRAMES) wcat(out, g_frameData == 2 ? (const wchar*)L", plus and minus only" : g_frameData ? (const wchar*)L", detailed" : (const wchar*)L", off", max);
     int c = item_cat(i), v = i == MI_VOLUME ? g_volume : c >= 0 ? g_cv[c] : -1;
     if (v == 0) wcat(out, (const wchar*)L", off", max);
     else if (v > 0) { wcat(out, (const wchar*)L", ", max); wcat_u(out, (u64)v, max); wcat(out, (const wchar*)L" percent", max); }
@@ -2519,7 +2522,7 @@ static void menu_move(int d)
 static void menu_change(int d, int activate)
 {
     int i = g_menuItem, c = item_cat(i);
-    int* b = i == MI_COMBO ? &g_comboReadout : i == MI_FRAMES ? &g_frameData : i == MI_DAMAGE ? &g_damageNumbers : i == MI_AUTOREAD ? &g_autoRead : 0;
+    int* b = i == MI_COMBO ? &g_comboReadout : i == MI_DAMAGE ? &g_damageNumbers : i == MI_AUTOREAD ? &g_autoRead : 0;
     if (i == MI_VOLUME || c >= 0) {
         if (activate) { menu_preview(i); return; }   /* A/Enter: just listen */
         int* v = i == MI_VOLUME ? &g_volume : &g_cv[c];
@@ -2534,6 +2537,10 @@ static void menu_change(int d, int activate)
         return;
     }
     if (b) *b = !*b;
+    else if (i == MI_FRAMES) {   /* off, detailed, plus and minus only */
+        g_frameData = (g_frameData + (d < 0 ? 2 : 1)) % 3;
+        if (g_frameData) g_frameLast = g_frameData;
+    }
     else if (i == MI_CLOSE) { if (activate) menu_close(); return; }
     else return;
     settings_save();
@@ -2594,8 +2601,9 @@ static void poll_keys(void)
     if (f3) { g_menuOpen = 1; menu_show(); return; }
     if (f11) steam_invite_key((GetAsyncKeyState(0x10) & 0x8000) != 0, (GetAsyncKeyState(0x11) & 0x8000) != 0);
     if (f10 && (GetAsyncKeyState(0x11) & 0x8000) && (GetAsyncKeyState(0x10) & 0x8000)) {   /* Ctrl+Shift+F10: frame data in practice */
-        g_frameData = !g_frameData; settings_save();
-        speak_force(g_frameData ? (const wchar*)L"Frame data on" : (const wchar*)L"Frame data off");
+        if (g_frameData) { g_frameLast = g_frameData; g_frameData = 0; } else g_frameData = g_frameLast ? g_frameLast : 1;
+        settings_save();
+        speak_force(g_frameData == 2 ? (const wchar*)L"Frame data on, plus and minus only" : g_frameData ? (const wchar*)L"Frame data on, detailed" : (const wchar*)L"Frame data off");
     }
     else if (f10 && (GetAsyncKeyState(0x11) & 0x8000)) {   /* Ctrl+F10: hit and combo readout */
         g_comboReadout = !g_comboReadout; settings_save();
