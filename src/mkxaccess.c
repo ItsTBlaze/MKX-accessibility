@@ -14,7 +14,7 @@
    Everything is also written to MKXAccess.log next to the game exe. */
 #include "win.h"
 
-#define VERSION L"0.9.19"
+#define VERSION L"0.9.20"
 #define FOCUS_DELAY 70   /* ms to wait after focus moves, for descriptions to arrive */
 #define IMAGE_BASE 0x140000000ULL
 
@@ -371,9 +371,10 @@ static playerTick_t o_playerTick;
 static int g_frameData = 1;   /* menu: frame data in practice: 0 off, 1 detailed, 2 plus and minus only */
 static int g_frameLast = 1;   /* the style Ctrl+Shift+F10 turns back on */
 static volatile int g_fdYou;  /* which player is you (set by the worker) */
-typedef struct { int st, start, c790, ok; } FdNow;
+typedef struct { int st, start, c790, ok; float life, max; } FdNow;
 static FdNow g_fdNow[2];
 static int g_fdActive, g_fdStartup, g_fdBlock, g_fdKd, g_fdYouFree, g_fdOppFree, g_fdBegin, g_fdPrevOppBusy;
+static float g_fdLifeBefore, g_fdPrevOppLife;
 static void hk_playerTick(void* info)
 {
     o_playerTick(info);
@@ -389,6 +390,7 @@ static void hk_playerTick(void* info)
     int h = *(int*)(pi + 0x28);
     if (!obj || h == -1 || *(DWORD*)(obj + 8) != (DWORD)h) return;
     n->st = *(int*)(obj + 0xA2C); n->start = *(int*)(obj + 0x1010); n->c790 = *(int*)(obj + 0x790); n->ok = 1;
+    n->life = *(float*)(obj + 0xA38); n->max = *(float*)(obj + 0xA3C);
     if (p != 1) return;   /* both fighters have ticked: compare */
     if (*(int*)(fg + 0x198C) != FD_PRACTICE_MODE || !g_fdNow[0].ok) { g_fdActive = 0; return; }
     int tick = *(int*)(gg + 0xD0);
@@ -399,6 +401,7 @@ static void hk_playerTick(void* info)
         if (ob && !g_fdPrevOppBusy && yb && (y->st & 0x1000)) {   /* your attack connected */
             g_fdActive = 1; g_fdBegin = tick; g_fdStartup = tick - y->start;
             g_fdBlock = 0; g_fdKd = 0; g_fdYouFree = g_fdOppFree = 0;
+            g_fdLifeBefore = g_fdPrevOppLife > 0 ? g_fdPrevOppLife : o->life;   /* the damage counts from before the hit */
         }
     }
     if (g_fdActive) {
@@ -409,10 +412,13 @@ static void hk_playerTick(void* info)
         if (g_fdYouFree && g_fdOppFree) {
             g_fdActive = 0;
             Event* e = q_begin();
-            if (e) { e->type = EV_FRAMES; e->x = g_fdStartup; e->y = g_fdOppFree - g_fdYouFree; e->id = (u64)(g_fdBlock | (g_fdKd << 1)); q_end(); }
+            /* damage in tenths of a percent of full health */
+            int dmg = o->max > 0 ? (int)((g_fdLifeBefore - o->life) * 1000.0f / o->max + 0.5f) : 0;
+            if (dmg < 0) dmg = 0;
+            if (e) { e->type = EV_FRAMES; e->x = g_fdStartup; e->y = g_fdOppFree - g_fdYouFree; e->id = (u64)(g_fdBlock | (g_fdKd << 1) | ((u64)dmg << 8)); q_end(); }
         } else if (tick - g_fdBegin > 600) g_fdActive = 0;   /* 10 seconds: give up */
     }
-    g_fdPrevOppBusy = ob;
+    g_fdPrevOppBusy = ob; g_fdPrevOppLife = o->life;
 }
 
 static HookDef g_hooks[] = {
@@ -892,20 +898,26 @@ static void combo_finished(Event* ev)
 static void wcat_u(wchar* d, u64 v, int max) { wchar num[24]; utoa_w(v, num, 10, 1); wcat(d, num, max); }
 /* frame data result from hk_playerTick: said together with the hit's level and damage
    when that is still waiting, otherwise right after what is being said */
-static wchar g_frameLine[96]; static DWORD g_frameT;
+static wchar g_frameLine[128]; static DWORD g_frameT;
 static void frames_result(int startup, int adv, int flags)
 {
-    static wchar line[96]; line[0] = 0;
-    if (startup > 0 && startup < 200 && g_frameData != 2) { wcpy(line, (const wchar*)L"start-up ", 96); wcat_u(line, (u64)startup, 96); }   /* detailed only */
-    if (line[0]) wcat(line, (const wchar*)L", ", 96);
-    if (flags & 2) wcat(line, (const wchar*)L"knockdown", 96);   /* both styles */
-    else {
-        if (adv > 0) wcat(line, (const wchar*)L"plus ", 96); else if (adv < 0) wcat(line, (const wchar*)L"minus ", 96);
-        wcat_u(line, (u64)(adv < 0 ? -adv : adv), 96);
-        wcat(line, (flags & 1) ? (const wchar*)L" on block" : (const wchar*)L" on hit", 96);
+    static wchar line[128]; line[0] = 0;
+    if (startup > 0 && startup < 200 && g_frameData != 2) { wcpy(line, (const wchar*)L"start-up ", 128); wcat_u(line, (u64)startup, 128); }   /* detailed only */
+    if (line[0]) wcat(line, (const wchar*)L", ", 128);
+    if (flags & 2) wcat(line, (const wchar*)L"knockdown, ", 128);   /* and still the advantage */
+    if (adv > 0) wcat(line, (const wchar*)L"plus ", 128); else if (adv < 0) wcat(line, (const wchar*)L"minus ", 128);
+    wcat_u(line, (u64)(adv < 0 ? -adv : adv), 128);
+    wcat(line, (flags & 1) ? (const wchar*)L" on block" : (const wchar*)L" on hit", 128);
+    /* detailed: the damage too (on a hit only when the hit readout, which says it, is off) */
+    int dmg = flags >> 8;
+    if (g_frameData == 1 && dmg > 0 && ((flags & 1) || !g_comboReadout)) {
+        wcat(line, (flags & 1) ? (const wchar*)L", block damage " : (const wchar*)L", damage ", 128);
+        wcat_u(line, (u64)(dmg / 10), 128);
+        if (dmg % 10) { wcat(line, (const wchar*)L".", 128); wcat_u(line, (u64)(dmg % 10), 128); }
+        wcat(line, (const wchar*)L" percent", 128);
     }
     logf3((const wchar*)L"FRAMES", 0, line);
-    wcpy(g_frameLine, line, 96); g_frameT = GetTickCount();
+    wcpy(g_frameLine, line, 128); g_frameT = GetTickCount();
 }
 static void frames_tick(DWORD now)
 {
@@ -1431,6 +1443,7 @@ static void challenge_tick(DWORD now)
    buttons); values the game marks N/A are left out. */
 static void wcat_a(wchar* d, const char* s, int max) { int n = wlen(d); for (int i = 0; s[i] && n < max - 1; i++) d[n++] = (wchar)(BYTE)s[i]; d[n] = 0; }
 static int g_mlHeading;   /* the focused move list cell is a heading: no frame data */
+static wchar g_mlPage[64]; static DWORD g_mlPageT;   /* a move list page just chosen */
 static void movelist_frames(wchar* out, int max)
 {
     if (g_mlHeading) return;
@@ -1527,6 +1540,10 @@ static void announce_focus(void)
        directly. Whichever was set last is this page's: the move's name and buttons, or
        the heading. */
     g_mlHeading = 0;
+    if (g_mlPage[0] && contains_ci(g_focusPath, "MoveListBaseLayer.Elements.GridSelectInterface.Cell_")) {
+        if (g_focusTime - g_mlPageT < 400) add_part(out, 2048, g_mlPage, &count);   /* the page, then its first move */
+        g_mlPage[0] = 0;
+    }
     if (contains_ci(g_focusPath, "MoveListBaseLayer.Elements.GridSelectInterface.Cell_") && !found) {
         char base[PATHMAX]; int bl = 0;
         for (; g_focusPath[bl] && bl < PATHMAX - 40; bl++) base[bl] = (char)g_focusPath[bl];
@@ -1738,6 +1755,17 @@ static void handle_focus(Event* ev)
     if (!ev->path[0]) return;
     if (ev->type == EV_GRID) { g_gridX = ev->x; g_gridY = ev->y; }
     else g_gridX = g_gridY = -1;
+    /* move list pages (BASIC, KOMBOS, SPECIAL MOVES...): the page tab and the first move on
+       it get focus in the same moment, so only the move would be heard. Keep the page's
+       name and say it first. */
+    if (contains_ci(ev->path, "PageNavLayer.NavigationInterfaceLayer.Cell_")) {
+        char pth[PATHMAX]; int n = 0;
+        for (; ev->path[n] && n < PATHMAX - 40; n++) pth[n] = (char)ev->path[n];
+        const char* t = ".FocusElement.FocusText0.Text"; for (int k = 0; t[k]; k++) pth[n + k] = t[k];
+        pth[n + 29] = 0;
+        Entry* e = entry_at(pth);
+        if (e && e->text[0]) { wcpy(g_mlPage, e->text, 64); g_mlPageT = ev->t; }
+    }
     if (g_focusPending && weq(g_focusPath, ev->path)) return;
     if (!g_focusPending && weq(g_lastFocus, ev->path) && ev->t - g_lastFocusT < 1000) return;   /* same item re-highlighted */
     wcpy(g_lastFocus, ev->path, PATHMAX); g_lastFocusT = ev->t;
