@@ -14,7 +14,7 @@
    Everything is also written to MKXAccess.log next to the game exe. */
 #include "win.h"
 
-#define VERSION L"0.9.13"
+#define VERSION L"0.9.14"
 #define FOCUS_DELAY 70   /* ms to wait after focus moves, for descriptions to arrive */
 #define IMAGE_BASE 0x140000000ULL
 
@@ -44,7 +44,7 @@ static gotoLabel_t   o_gotoAndPlay, o_gotoAndStop;
 
 /* ------------------------------------------------------------------ */
 /* event queue: game thread -> worker thread                           */
-enum { EV_TEXT = 1, EV_HTML, EV_VTEXT, EV_VHTML, EV_FOCUS, EV_SETFOCUS, EV_GRID, EV_ANIM, EV_LABEL, EV_COMBOEND, EV_INVITE, EV_PAD, EV_LOBBYINVITE, EV_MENUPAD, EV_METERFULL };
+enum { EV_TEXT = 1, EV_HTML, EV_VTEXT, EV_VHTML, EV_FOCUS, EV_SETFOCUS, EV_GRID, EV_ANIM, EV_LABEL, EV_COMBOEND, EV_INVITE, EV_PAD, EV_LOBBYINVITE, EV_MENUPAD, EV_METERFULL, EV_FDIAG };
 #define PATHMAX 192
 #define TEXTMAX 512
 typedef struct { int type; u64 id; DWORD t; int x, y; wchar path[PATHMAX]; wchar text[TEXTMAX]; } Event;
@@ -353,6 +353,57 @@ static void hk_setMeter(void* self, float v)
     if (before < 0.999f && after >= 0.999f) { Event* e = q_begin(); if (e) { e->type = EV_METERFULL; e->id = (u64)self; q_end(); } }
 }
 
+/* frame data research (test builds): PLAYER_INFO::Tick runs once per game tick for each
+   player (from FG_GAME_INFO::Tick). After it, the fighter's attack and reaction state is
+   compared with the last tick and every change is logged with the game tick number
+   (GAME_INFO +0xD0, GetGameTickCounter). FGCharacterObj: +0xC78 GetAttackState, +0x1010
+   GetLastStartAttackVMTick, +0x1054 GetFirstHitDetected, +0xA2C bit 0x400 / +0xF0C
+   IsAlreadyReacting, +0xA38 life. */
+typedef void (*playerTick_t)(void*);
+static playerTick_t o_playerTick;
+typedef struct { int atk, start, hit, react, f0c, a2c; float life; int valid; } FdState;
+static FdState g_fd[2];
+static void fd_num(wchar* d, int* n, long long v)
+{
+    if (v < 0) { d[(*n)++] = '-'; v = -v; }
+    wchar t[24]; int k = 0; do { t[k++] = (wchar)('0' + v % 10); v /= 10; } while (v && k < 23);
+    while (k) d[(*n)++] = t[--k];
+}
+static void fd_put(wchar* d, int* n, const char* s) { while (*s) d[(*n)++] = (wchar)*s++; }
+static void hk_playerTick(void* info)
+{
+    o_playerTick(info);
+    BYTE* pi = (BYTE*)info;
+    u64 gg = *(u64*)(g_base + (0x143316848ULL - IMAGE_BASE));
+    u64 fg = *(u64*)(g_base + (0x1430DBA00ULL - IMAGE_BASE));
+    if (!pi || !gg || !fg || !readable(pi + 0x20, 16)) return;
+    int p = *(u64*)(fg + 0x1968) == (u64)pi ? 0 : *(u64*)(fg + 0x1970) == (u64)pi ? 1 : -1;
+    if (p < 0) return;
+    BYTE* obj = *(BYTE**)(pi + 0x20);
+    int h = *(int*)(pi + 0x28);
+    if (!obj || h == -1 || !readable(obj, 0x1060) || *(DWORD*)(obj + 8) != (DWORD)h) { g_fd[p].valid = 0; return; }
+    FdState n;
+    n.atk = *(int*)(obj + 0xC78); n.start = *(int*)(obj + 0x1010); n.hit = *(int*)(obj + 0x1054);
+    n.a2c = *(int*)(obj + 0xA2C); n.f0c = *(int*)(obj + 0xF0C);
+    n.react = (n.a2c & 0x400) || n.f0c; n.life = *(float*)(obj + 0xA38); n.valid = 1;
+    FdState* o = &g_fd[p];
+    if (o->valid && n.atk == o->atk && n.start == o->start && n.hit == o->hit && n.react == o->react && n.f0c == o->f0c && n.life == o->life) return;
+    *o = n;
+    Event* e = q_begin(); if (!e) return;
+    e->type = EV_FDIAG;
+    int k = 0; wchar* d = e->text;
+    fd_put(d, &k, p ? "P2 tick " : "P1 tick "); fd_num(d, &k, *(int*)(gg + 0xD0));
+    fd_put(d, &k, " atk "); fd_num(d, &k, n.atk);
+    fd_put(d, &k, " start "); fd_num(d, &k, n.start);
+    fd_put(d, &k, " hit "); fd_num(d, &k, n.hit);
+    fd_put(d, &k, " react "); fd_num(d, &k, n.react);
+    fd_put(d, &k, " f0c "); fd_num(d, &k, n.f0c);
+    fd_put(d, &k, " a2c "); fd_num(d, &k, n.a2c);
+    fd_put(d, &k, " life "); fd_num(d, &k, (long long)(n.life * 1000));
+    d[k] = 0;
+    q_end();
+}
+
 static HookDef g_hooks[] = {
     { "UIElement::gotoAndPlay",        0x140C36B20, 7, {0x48,0x83,0xEC,0x28,0x4C,0x8B,0xC2}, hk_gotoAndPlay,    (void**)&o_gotoAndPlay },
     { "UIElement::gotoAndStop",        0x140C36BA0, 7, {0x48,0x83,0xEC,0x28,0x4C,0x8B,0xC2}, hk_gotoAndStop,    (void**)&o_gotoAndStop },
@@ -366,6 +417,7 @@ static HookDef g_hooks[] = {
     { "UIGridSelectWidget::DrawCellGainFocus",0x1405B7550,6,{0x40,0x53,0x48,0x83,0xEC,0x20}, hk_drawCell,       (void**)&o_drawCell },
     { "PCInput::HandleKeyboardInput",  0x140813550, 5, {0x48,0x89,0x5C,0x24,0x08},           hk_kbd,            (void**)&o_kbd },
     { "PLAYER_INFO::SetSuperMeter",    0x14055EC40, 6, {0x40,0x53,0x48,0x83,0xEC,0x40},      hk_setMeter,       (void**)&o_setMeter },
+    { "PLAYER_INFO::Tick",             0x140563D70, 5, {0x48,0x89,0x5C,0x24,0x08},           hk_playerTick,     (void**)&o_playerTick },
 };
 #define NHOOKS (int)(sizeof(g_hooks)/sizeof(g_hooks[0]))
 static int g_hookOk[NHOOKS];
@@ -2467,6 +2519,7 @@ static DWORD WINAPI worker(void* arg)
             else if (ev.type == EV_LOBBYINVITE) steam_invite_received(&ev);
             else if (ev.type == EV_MENUPAD) menu_pad(ev.x);
             else if (ev.type == EV_METERFULL) meter_full(ev.id);
+            else if (ev.type == EV_FDIAG) logf3((const wchar*)L"FD", 0, ev.text);
             else if (ev.type == EV_PAD && (ev.x & PAD_BACK)) steam_accept_invite();
             else if (ev.type == EV_PAD) {
                 if (ev.x & PAD_DOWN) steam_invite_key(0, 0);
