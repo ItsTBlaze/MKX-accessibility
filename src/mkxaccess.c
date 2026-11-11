@@ -14,7 +14,7 @@
    Everything is also written to MKXAccess.log next to the game exe. */
 #include "win.h"
 
-#define VERSION L"0.9.17"
+#define VERSION L"0.9.18"
 #define FOCUS_DELAY 70   /* ms to wait after focus moves, for descriptions to arrive */
 #define IMAGE_BASE 0x140000000ULL
 
@@ -1429,8 +1429,10 @@ static void challenge_tick(DWORD now)
    hit, cancel 20, damage 2 percent, block damage 0.4 percent". Only for a move (a cell with
    buttons); values the game marks N/A are left out. */
 static void wcat_a(wchar* d, const char* s, int max) { int n = wlen(d); for (int i = 0; s[i] && n < max - 1; i++) d[n++] = (wchar)(BYTE)s[i]; d[n] = 0; }
+static int g_mlHeading;   /* the focused move list cell is a heading: no frame data */
 static void movelist_frames(wchar* out, int max)
 {
+    if (g_mlHeading) return;
     char focusInput[PATHMAX]; int n = 0;
     for (; g_focusPath[n] && n < PATHMAX - 40; n++) focusInput[n] = (char)g_focusPath[n];
     focusInput[n] = 0;
@@ -1438,6 +1440,10 @@ static void movelist_frames(wchar* out, int max)
     for (int k = 0; tail[k]; k++) focusInput[n + k] = tail[k];
     focusInput[n + 29] = 0;   /* strlen(tail) */
     Entry* in = entry_at(focusInput);
+    if (!in || !in->text[0]) {   /* an indented line keeps its buttons in FocusText4 */
+        focusInput[n + 23] = '4';
+        in = entry_at(focusInput);
+    }
     if (!in || !in->text[0]) return;   /* a heading, not a move */
     {   /* jump attacks and the like have no real data: everything 0 */
         Entry* act = entry_at("_root.MoveListBaseLayer.Elements.FrameDataLayer.Cell_2.Text1.Text");
@@ -1519,15 +1525,28 @@ static void announce_focus(void)
        a move's FocusText0/1 on another), so a cell can hold more than 4 texts: read it
        directly. Whichever was set last is this page's: the move's name and buttons, or
        the heading. */
+    g_mlHeading = 0;
     if (contains_ci(g_focusPath, "MoveListBaseLayer.Elements.GridSelectInterface.Cell_") && !found) {
         char base[PATHMAX]; int bl = 0;
         for (; g_focusPath[bl] && bl < PATHMAX - 40; bl++) base[bl] = (char)g_focusPath[bl];
-        const char* sub[3] = { ".FocusElement.FocusText0.Text", ".FocusElement.FocusText1.Text", ".FocusElement.FocusText2.Text" };
-        Entry* t[3];
-        for (int k = 0; k < 3; k++) { int q = bl; for (const char* c = sub[k]; *c; c++) base[q++] = *c; base[q] = 0; t[k] = entry_at(base); if (t[k] && !t[k]->text[0]) t[k] = 0; }
-        int heading = t[2] && (!t[0] || (int)(t[2]->touched - t[0]->touched) > 50);
-        if (heading) add_part(out, 2048, t[2]->text, &count);
-        else { if (t[0]) add_part(out, 2048, t[0]->text, &count); if (t[1]) add_part(out, 2048, t[1]->text, &count); }
+        /* a cell is used three ways: a move (FocusText0 name, FocusText1 buttons), a heading
+           (FocusText2), or an indented extra line such as Enhance or a variation move
+           (FocusText3 name, FocusText4 buttons, the "Bullet" style) */
+        const char* sub[5] = { ".FocusElement.FocusText0.Text", ".FocusElement.FocusText1.Text", ".FocusElement.FocusText2.Text",
+                               ".FocusElement.FocusText3.Text", ".FocusElement.FocusText4.Text" };
+        Entry* t[5];
+        for (int k = 0; k < 5; k++) { int q = bl; for (const char* c = sub[k]; *c; c++) base[q++] = *c; base[q] = 0; t[k] = entry_at(base); if (t[k] && !t[k]->text[0]) t[k] = 0; }
+        DWORD when[3] = { 0, 0, 0 }; int have[3] = { 0, 0, 0 };
+        for (int k = 0; k < 5; k++) if (t[k]) {
+            int g = k < 2 ? 0 : k == 2 ? 1 : 2;
+            if (!have[g] || (int)(t[k]->touched - when[g]) > 0) when[g] = t[k]->touched;
+            have[g] = 1;
+        }
+        int best = -1;
+        for (int g = 0; g < 3; g++) if (have[g] && (best < 0 || (int)(when[g] - when[best]) > 0)) best = g;
+        if (best == 0) { if (t[0]) add_part(out, 2048, t[0]->text, &count); if (t[1]) add_part(out, 2048, t[1]->text, &count); }
+        else if (best == 1) { add_part(out, 2048, t[2]->text, &count); g_mlHeading = 1; }
+        else if (best == 2) { if (t[3]) add_part(out, 2048, t[3]->text, &count); if (t[4]) add_part(out, 2048, t[4]->text, &count); }
         wcpy(anc, g_focusPath, PATHMAX);   /* its texts are not read again below */
         wcpy(g_focusItem, anc, PATHMAX);
         found = 2;
