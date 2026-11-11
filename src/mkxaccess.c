@@ -14,7 +14,7 @@
    Everything is also written to MKXAccess.log next to the game exe. */
 #include "win.h"
 
-#define VERSION L"0.9.14"
+#define VERSION L"0.9.15"
 #define FOCUS_DELAY 70   /* ms to wait after focus moves, for descriptions to arrive */
 #define IMAGE_BASE 0x140000000ULL
 
@@ -361,7 +361,7 @@ static void hk_setMeter(void* self, float v)
    IsAlreadyReacting, +0xA38 life. */
 typedef void (*playerTick_t)(void*);
 static playerTick_t o_playerTick;
-typedef struct { int atk, start, hit, react, f0c, a2c; float life; int valid; } FdState;
+typedef struct { int atk, start, hit, react, f0c, a2c, a28, f20, bo, bos, blk, c790; float life; int valid; } FdState;
 static FdState g_fd[2];
 static void fd_num(wchar* d, int* n, long long v)
 {
@@ -386,8 +386,17 @@ static void hk_playerTick(void* info)
     n.atk = *(int*)(obj + 0xC78); n.start = *(int*)(obj + 0x1010); n.hit = *(int*)(obj + 0x1054);
     n.a2c = *(int*)(obj + 0xA2C); n.f0c = *(int*)(obj + 0xF0C);
     n.react = (n.a2c & 0x400) || n.f0c; n.life = *(float*)(obj + 0xA38); n.valid = 1;
+    if (!readable(obj, 0x1100)) return;
+    n.a28 = *(int*)(obj + 0xA28); n.c790 = *(int*)(obj + 0x790);
+    n.f20 = 0; for (int i = 0; i < 4; i++) n.f20 |= *(int*)(obj + 0xF20 + 8 * i);
+    n.bo = *(int*)(obj + 0x1048); n.bos = *(int*)(obj + 0x104C);
+    /* FGCharacterObj::CanIBeInABlockingState without calling it (it can touch the
+       online desync tracker): no "can't block" flags, not in a few states, alive */
+    n.blk = !(n.f20 & ((1 << 0x13) | 0x40)) && n.a2c != 0x1201 && n.a2c != 0x2013 && !(n.a28 & 8) && n.a2c != 0x4605 && !n.c790 &&
+            !*(int*)(obj + 0x1098) && !*(int*)(obj + 0x109C) && !*(int*)(obj + 0x10C8) && !*(int*)(obj + 0x10F8) && n.life > 0;
     FdState* o = &g_fd[p];
-    if (o->valid && n.atk == o->atk && n.start == o->start && n.hit == o->hit && n.react == o->react && n.f0c == o->f0c && n.life == o->life) return;
+    if (o->valid && n.atk == o->atk && n.start == o->start && n.hit == o->hit && n.react == o->react && n.f0c == o->f0c && n.life == o->life &&
+        n.a2c == o->a2c && n.f20 == o->f20 && n.bo == o->bo && n.bos == o->bos && n.blk == o->blk && n.a28 == o->a28 && n.c790 == o->c790) return;
     *o = n;
     Event* e = q_begin(); if (!e) return;
     e->type = EV_FDIAG;
@@ -400,6 +409,12 @@ static void hk_playerTick(void* info)
     fd_put(d, &k, " f0c "); fd_num(d, &k, n.f0c);
     fd_put(d, &k, " a2c "); fd_num(d, &k, n.a2c);
     fd_put(d, &k, " life "); fd_num(d, &k, (long long)(n.life * 1000));
+    fd_put(d, &k, " blk "); fd_num(d, &k, n.blk);
+    fd_put(d, &k, " f20 "); fd_num(d, &k, (unsigned)n.f20);
+    fd_put(d, &k, " a28 "); fd_num(d, &k, n.a28);
+    fd_put(d, &k, " bo "); fd_num(d, &k, n.bo);
+    fd_put(d, &k, " bos "); fd_num(d, &k, n.bos);
+    fd_put(d, &k, " c790 "); fd_num(d, &k, n.c790);
     d[k] = 0;
     q_end();
 }
