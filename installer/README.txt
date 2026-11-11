@@ -1,4 +1,4 @@
-MKX Access 0.9.22 - screen reader support for Mortal Kombat X
+MKX Access 0.9.23 - screen reader support for Mortal Kombat X
 =============================================================
 
 MKX Access makes Mortal Kombat X (Steam, PC) speak through the NVDA
@@ -72,7 +72,9 @@ Damage and combos
 - F10 turns the damage numbers off and on. With them off you still
   hear hit levels and combo counts: "mid", "5 hit combo, overhead,
   mid, mid, mid, mid", "throw".
-- Ctrl+F10 turns the whole hit and combo readout off and on.
+- Ctrl+F10 turns the hit and combo readout (levels and hit counts) off
+  and on. With it off and damage numbers on, you hear just the damage:
+  "7 percent".
 
 Fight sounds
 Short sounds tell you what is happening in a fight. You and your
