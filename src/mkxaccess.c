@@ -14,7 +14,7 @@
    Everything is also written to MKXAccess.log next to the game exe. */
 #include "win.h"
 
-#define VERSION L"0.9.23"
+#define VERSION L"0.9.24"
 #define FOCUS_DELAY 70   /* ms to wait after focus moves, for descriptions to arrive */
 #define IMAGE_BASE 0x140000000ULL
 
@@ -45,7 +45,7 @@ static gotoLabel_t   o_gotoAndPlay, o_gotoAndStop;
 /* ------------------------------------------------------------------ */
 /* event queue: game thread -> worker thread                           */
 enum { EV_TEXT = 1, EV_HTML, EV_VTEXT, EV_VHTML, EV_FOCUS, EV_SETFOCUS, EV_GRID, EV_ANIM, EV_LABEL, EV_COMBOEND, EV_INVITE, EV_PAD, EV_LOBBYINVITE, EV_MENUPAD, EV_METERFULL, EV_FRAMES };
-#define PATHMAX 192
+#define PATHMAX 320
 #define TEXTMAX 512
 typedef struct { int type; u64 id; DWORD t; int x, y; wchar path[PATHMAX]; wchar text[TEXTMAX]; } Event;
 #define QSIZE 1024
@@ -646,8 +646,8 @@ static const char* g_tok[][2] = {
     {"LSH","left bumper"},{"RSH","right bumper"},{"LB","left bumper"},{"RB","right bumper"},
     {"LT","left trigger"},{"RT","right trigger"},{"LTR","left trigger"},{"RTR","right trigger"},
     {"LTRIG","left trigger"},{"RTRIG","right trigger"},{"LTRIGGER","left trigger"},{"RTRIGGER","right trigger"},
-    {"LS","left stick"},{"RS","right stick"},{"L3","left stick click"},{"R3","right stick click"},
-    {"START","start"},{"BACK","back button"},{"SELECT","select"},{"MENU","menu"},{"VIEW","view"},
+    {"LS","left stick"},{"LThumb","left stick"},{"RThumb","right stick"},{"RS","right stick"},{"L3","left stick click"},{"R3","right stick click"},
+    {"START","start"},{"BACK","back button"},{"SELECT","back"},{"MENU","menu"},{"VIEW","view"},
     {"U","up"},{"D","down"},{"L","left"},{"R","right"},
     {"Up","up"},{"Down","down"},{"Left","left"},{"Right","right"},
     {"Away","back"},{"Towards","forward"},{"Toward","forward"},
@@ -665,9 +665,33 @@ static int tok_eq(const wchar* s, int n, const char* t)
     for (; i < n && t[i]; i++) { wchar a = s[i], b = (wchar)t[i]; if (a >= 'a' && a <= 'z') a -= 32; if (b >= 'a' && b <= 'z') b -= 32; if (a != b) return 0; }
     return i == n && !t[i];
 }
+/* an action name in capitals, as button bars write them: "KOMBAT", "A" (not "or", "during") */
+static int caps_word(const wchar* s)
+{
+    if (!(s[0] >= 'A' && s[0] <= 'Z')) return 0;
+    return !((s[1] >= 'a' && s[1] <= 'z'));
+}
+/* a button bar: two or more "[X]WORD" pairs, e.g. "[A]KOMBAT HISTORY [B]EXIT" */
+static int is_button_bar(const wchar* in)
+{
+    int pairs = 0, lead = 0, open = -1;
+    for (int i = 0; in[i]; i++) {
+        if (in[i] == '[') open = i;
+        if (in[i] != ']') continue;
+        int j = i + 1; while (in[j] == ' ') j++;
+        if (!caps_word(in + j)) continue;
+        pairs++;
+        /* one pair that is a whole part of its own: "[Select]THEATER VIEW", "..., [Select]THEATER VIEW" */
+        if (open == 0 || (open >= 2 && in[open - 1] == ' ' && in[open - 2] == ',')) lead = 1;
+    }
+    return pairs >= 2 || lead;
+}
 static void speakify(const wchar* in, wchar* out, int max)
 {
     int o = 0;
+    /* button bars read as "back, FULLSCREEN. A, KOMBAT HISTORY. B, EXIT" so each
+       button is heard with its own action */
+    int bar = is_button_bar(in), words = 0;
     for (int i = 0; in[i] && o < max - 40; ) {
         if (in[i] == '?' && in[i + 1] == '?' && in[i + 2] == '?') {   /* "????????": not unlocked yet */
             while (in[i] == '?') i++;
@@ -678,16 +702,26 @@ static void speakify(const wchar* in, wchar* out, int max)
             int j = i + 1; while (in[j] && in[j] != ']' && j - i < 24) j++;
             if (in[j] == ']') {
                 const wchar* t = in + i + 1; int n = j - i - 1;
-                if (o > 0 && out[o - 1] != ' ') out[o++] = ' ';
+                if (bar && words) {   /* a new button after an action: end that pair */
+                    while (o > 0 && out[o - 1] == ' ') o--;
+                    if (o > 0 && out[o - 1] != '.' && out[o - 1] != ',') out[o++] = '.';
+                    words = 0;
+                }
+                if (o > 0 && out[o - 1] != ' ' && out[o - 1] != '/') out[o++] = ' ';
                 int found = 0;
                 for (int k = 0; k < (int)(sizeof(g_tok) / sizeof(g_tok[0])); k++)
                     if (tok_eq(t, n, g_tok[k][0])) { for (const char* w = g_tok[k][1]; *w; w++) out[o++] = (wchar)*w; found = 1; break; }
                 if (!found) for (int k = 0; k < n; k++) out[o++] = (t[k] == '_') ? ' ' : t[k];
                 i = j + 1;
+                if (bar) {   /* the action follows: "A, KOMBAT HISTORY" */
+                    int k = i; while (in[k] == ' ') k++;
+                    if (caps_word(in + k)) { out[o++] = ','; out[o++] = ' '; i = k; continue; }
+                }
                 if (in[i] && in[i] != ' ' && in[i] != ',' && in[i] != '.') out[o++] = ' ';
                 continue;
             }
         }
+        if ((in[i] >= 'A' && in[i] <= 'Z') || (in[i] >= 'a' && in[i] <= 'z')) words = 1;
         out[o++] = in[i++];
     }
     out[o] = 0;
@@ -1351,9 +1385,91 @@ static int challenge_line(const wchar* cell, wchar* out, int max, int brief)
     return 1;
 }
 
+/* the newest text under parent whose path contains sub */
+static Entry* child_containing(const wchar* parent, const char* sub)
+{
+    Entry* best = 0;
+    for (int i = 0; i < NENT; i++) {
+        Entry* e = &g_ent[i];
+        if (!e->used || !e->text[0] || !is_child_path(e->path, parent) || !contains_ci(e->path, sub)) continue;
+        if (!best || (int)(e->touched - best->touched) > 0) best = e;
+    }
+    return best;
+}
+/* copy path, replacing the first "from" with "to" */
+static int path_swap(const wchar* path, const char* from, const char* to, wchar* out, int max)
+{
+    int fl = 0; while (from[fl]) fl++;
+    for (int i = 0; path[i]; i++) {
+        if (!starts_ci(path + i, from)) continue;
+        int o = 0;
+        for (int k = 0; k < i && o < max - 1; k++) out[o++] = path[k];
+        for (int k = 0; to[k] && o < max - 1; k++) out[o++] = (wchar)to[k];
+        for (int k = i + fl; path[k] && o < max - 1; k++) out[o++] = path[k];
+        out[o] = 0;
+        return 1;
+    }
+    return 0;
+}
+/* King of the Hill: a player slot in the theater.
+   The grid's focus marker is ...PlayerSlotGridSelectElement.Focus_N; the slot's
+   texts are under ...PlayerSlotGridSelectElement.Cell_N.FocusElement.PlayerSlotElement */
+static int koth_slot_line(wchar* out, int max)
+{
+    static wchar cell[PATHMAX];
+    if (!path_swap(g_focusPath, "PlayerSlotGridSelectElement.Focus_", "PlayerSlotGridSelectElement.Cell_", cell, PATHMAX)) return 0;
+    Entry* name = child_containing(cell, "PlayerModuleElement.gamertag");
+    if (!name || is_na(name->text)) { wcpy(out, (const wchar*)L"empty slot", max); return 1; }
+    wcpy(out, name->text, max);
+    Entry* e;
+    if ((e = child_containing(cell, "Wins.va")) && !is_na(e->text)) {
+        wcat(out, (const wchar*)L", ", max); wcat(out, e->text, max); wcat(out, weq(e->text, (const wchar*)L"1") ? (const wchar*)L" win" : (const wchar*)L" wins", max);
+    }
+    if ((e = child_containing(cell, "Losses.va")) && !is_na(e->text)) {
+        wcat(out, (const wchar*)L", ", max); wcat(out, e->text, max); wcat(out, weq(e->text, (const wchar*)L"1") ? (const wchar*)L" loss" : (const wchar*)L" losses", max);
+    }
+    if ((e = child_containing(cell, "Streak.va")) && !is_na(e->text)) { wcat(out, (const wchar*)L", streak ", max); wcat(out, e->text, max); }
+    Entry* ping = child_containing(cell, "Ping.ping");
+    if (ping && !is_na(ping->text) && ping->text[0] >= '0' && ping->text[0] <= '9') {
+        wchar part[96]; say_ping(ping->text, part, 96); wcat(out, (const wchar*)L", ", max); wcat(out, part, max);
+    }
+    /* the theater's button bar (AFK, invite, mute...): once when you arrive, not on every slot */
+    static DWORD barT;
+    DWORD now = GetTickCount();
+    if (now - barT > 60000) {
+        Entry* bar = entry_at("_root.BaseElementInterface.Elements.NavigationTextElement.ButtonText0.Text");
+        if (bar && !no_letters(bar->text)) { wcat(out, (const wchar*)L", ", max); wcat(out, bar->text, max); }
+    }
+    barT = now;
+    return 1;
+}
+/* King of the Hill respect vote: a ring of choices, NONE and 0 to 10.
+   Each choice is ...radialSelect.radialMenu.radialN (radial0 NONE, radial1 0 ...
+   radial11 10). The arrows pointing at them are ignored in handle_focus. */
+static DWORD g_radialT;
+static int radial_line(wchar* out, int max)
+{
+    static wchar item[PATHMAX];
+    if (!contains_ci(g_focusPath, "radialSelect.radialMenu.radial")) return 0;
+    wcpy(item, g_focusPath, PATHMAX);
+    Entry* e = child_containing(item, "selectType.rad");
+    if (!e) return 0;
+    out[0] = 0;
+    DWORD now = GetTickCount();
+    if (now - g_radialT > 4000) {   /* just opened: say what it is first */
+        Entry* h = entry_at("_root.BaseElementInterface.Elements.radialSelect.radialBase.header.text");
+        if (h && !is_na(h->text)) { wcpy(out, h->text, max); wcat(out, (const wchar*)L", ", max); }
+    }
+    g_radialT = now;
+    wcat(out, e->text, max);
+    return 1;
+}
+
 static int room_focus_line(wchar* out, int max)
 {
     out[0] = 0;
+    if (contains_ci(g_focusPath, "PlayerSlotGridSelectElement.Focus_")) return koth_slot_line(out, max);
+    if (contains_ci(g_focusPath, "radialSelect.radial")) return radial_line(out, max);
     if (contains_ci(g_focusPath, "onlineMainMenu.panel.challenges.cell")) return challenge_line(g_focusPath, out, max, 0);
     if (contains_ci(g_focusPath, "RoomListGridSelectElement.Cell_")) {
         Entry* name = child_ending(g_focusPath, "LabelText");
@@ -1632,6 +1748,7 @@ static void announce_focus(void)
         }
         g_recentSpoken[s] = 1;
         Entry* e = &g_ent[g_recent[s]];
+        if (contains_ci(e->path, "PlayerSlotGridSelectElement.Cell_")) continue;   /* King of the Hill slots: read on their own focus */
         if (e->gen != g_recentGen[s] || !e->text[0]) continue;
         if (list[0] && is_child_path(e->path, list) && !(anc[0] && is_child_path(e->path, anc)) && !is_titleish(e->path) && !is_prompt(e->path)) continue;
         if (no_letters(e->text) && !(anc[0] && is_child_path(e->path, anc))) continue;
@@ -1695,7 +1812,8 @@ static void auto_read(DWORD now)
         Entry* e = &g_ent[g_recent[s]];
         if (e->gen != g_recentGen[s] || is_busy(e, now) || !e->text[0] || (no_letters(e->text) && !is_price(e->path))) continue;
         if (ends_with_colon(e->text)) continue;   /* a label waiting for its value, e.g. "WINS:" */
-        if (contains_ci(e->path, "PlayerListGridSelectElement.Cell_") || contains_ci(e->path, "RoomListGridSelectElement.Cell_")) continue;   /* read on focus */
+        if (contains_ci(e->path, "PlayerListGridSelectElement.Cell_") || contains_ci(e->path, "RoomListGridSelectElement.Cell_") ||
+            contains_ci(e->path, "PlayerSlotGridSelectElement.Cell_") || contains_ci(e->path, "radialSelect.")) continue;   /* read on focus */
         if (now - g_lastTime < 3000 && wlen(e->text) >= 8 && contains_w(g_last, e->text)) continue;   /* just said it */
         int dup = 0; for (int i = 0; i < nc; i++) if (cand[i] == e) dup = 1;   /* only its latest value */
         if (!dup && nc < 64) cand[nc++] = e;
@@ -1762,6 +1880,9 @@ static void handle_focus(Event* ev)
     }
     logf3(tag, ev->path[0] ? ev->path : (const wchar*)L"?", extra);
     if (!ev->path[0]) return;
+    /* respect vote: every arrow animates when the ring opens; the choice itself
+       (radialMenu.radialN) gets focus when it is really selected */
+    if (contains_ci(ev->path, "radialSelect.radialBase.arrows.")) return;
     if (ev->type == EV_GRID) { g_gridX = ev->x; g_gridY = ev->y; }
     else g_gridX = g_gridY = -1;
     /* move list pages (BASIC, KOMBOS, SPECIAL MOVES...): the page tab and the first move on

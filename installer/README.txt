@@ -1,4 +1,4 @@
-MKX Access 0.9.23 - screen reader support for Mortal Kombat X
+MKX Access 0.9.24 - screen reader support for Mortal Kombat X
 =============================================================
 
 MKX Access makes Mortal Kombat X (Steam, PC) speak through the NVDA
@@ -125,6 +125,24 @@ Rooms
 - If a player's ping or record updates while you're on them, the new
   value is read with its label: "ping 85 milliseconds".
 - Player options (A on a player) and the chat box (X) are read.
+
+King of the Hill
+- Moving between the players in the theater reads each one:
+  "Your Sins, 2 wins, 1 loss, streak 2, ping 99 milliseconds".
+  An empty place reads "empty slot".
+- The first time you land on a player, the theater's buttons are read
+  too, each with its action: "back, FULLSCREEN. A, KOMBAT HISTORY.
+  right trigger, PROFILE. start, ENTER AFK. left trigger, INVITE.
+  left bumper, MUTE. B, EXIT". They are read again when they change,
+  for example after going AFK.
+- Pings that update every second are not read on their own.
+- Paying respects reads each choice as you move: "PAY YOUR RESPECTS,
+  NONE", "5", "6".
+
+Button bars
+- Rows of buttons are read with a pause between them, button first:
+  "A, SELECT. Y, REFRESH. B, EXIT". The Back button (which the game
+  calls Select) is read as "back".
 
 Typing a room name or a chat message
 - X on the room list (CREATE ROOM) opens a text box. Its title and
