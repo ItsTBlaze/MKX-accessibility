@@ -528,7 +528,7 @@ static void logf3(const wchar* tag, const wchar* a, const wchar* b)
 typedef DWORD (WINAPI *nvSpeak_t)(const wchar*);
 typedef DWORD (WINAPI *nvVoid_t)(void);
 static nvSpeak_t nv_speak; static nvVoid_t nv_cancel, nv_test;
-static int g_muted, g_autoRead = 1;
+static int g_muted, g_autoRead = 1;   /* 0 off, 1 everywhere, 2 everywhere except during fights */
 static wchar g_last[2048];
 static DWORD g_lastTime;
 
@@ -1791,9 +1791,21 @@ static void announce_focus(void)
     if (out[0]) say(out, 1);
 }
 
+/* fighters are on screen and no menu is up (the pause and results menus count as menus) */
+static u64 g_hpObj[2];   /* defined with the fight sounds */
+static int in_fight(void) { return g_hpObj[0] && g_hpObj[1] && g_wallQuiet != 1; }
+static const wchar* autoread_name(int v)
+{
+    return v == 2 ? (const wchar*)L"everywhere except during fights" : v ? (const wchar*)L"everywhere" : (const wchar*)L"off";
+}
 static void auto_read(DWORD now)
 {
     if (!g_autoRead || g_focusPending) return;
+    if (g_autoRead == 2 && in_fight()) {   /* quiet until the fight is over; nothing saved up for later */
+        int st = g_nrecent > NRECENT ? g_nrecent - NRECENT : 0;
+        for (int k = st; k < g_nrecent; k++) g_recentSpoken[k % NRECENT] = 1;
+        return;
+    }
     static wchar out[2048]; out[0] = 0; int count = 0;
     static Entry* cand[64]; int nc = 0;
     int start = g_nrecent > NRECENT ? g_nrecent - NRECENT : 0;
@@ -2365,7 +2377,7 @@ static struct { const char* key; int* v; int lo, hi; int save; } g_setDefs[] = {
     {"sound_health_you", &g_cv[C_HEALTH_YOU], 0, 100, 1}, {"sound_health_opponent", &g_cv[C_HEALTH_OPP], 0, 100, 1},
     {"sound_xray_you", &g_cv[C_XRAY_YOU], 0, 100, 1}, {"sound_xray_opponent", &g_cv[C_XRAY_OPP], 0, 100, 1},
     {"sound_wall_hum", &g_cv[C_HUM], 0, 100, 1}, {"sound_menu", &g_cv[C_MENU], 0, 100, 1},
-    {"combo_readout", &g_comboReadout, 0, 1, 1}, {"frame_data", &g_frameData, 0, 2, 1}, {"damage_numbers", &g_damageNumbers, 0, 1, 1}, {"auto_read", &g_autoRead, 0, 1, 1},
+    {"combo_readout", &g_comboReadout, 0, 1, 1}, {"frame_data", &g_frameData, 0, 2, 1}, {"damage_numbers", &g_damageNumbers, 0, 1, 1}, {"auto_read", &g_autoRead, 0, 2, 1},
     {"health_you", &g_oldHealthYou, 0, 1, 0}, {"health_opponent", &g_oldHealthOpp, 0, 1, 0}, {"xray_you", &g_oldXrayYou, 0, 1, 0},
     {"xray_opponent", &g_oldXrayOpp, 0, 1, 0}, {"wall_you", &g_oldWallYou, 0, 1, 0}, {"wall_opponent", &g_oldWallOpp, 0, 1, 0},
 };
@@ -2615,8 +2627,9 @@ static void menu_line(int i, wchar* out, int max, int withPos)
         (const wchar*)L"Wall hum",
         (const wchar*)L"Close menu" };
     wcpy(out, labels[i], max);
-    int* b = i == MI_COMBO ? &g_comboReadout : i == MI_DAMAGE ? &g_damageNumbers : i == MI_AUTOREAD ? &g_autoRead : 0;
+    int* b = i == MI_COMBO ? &g_comboReadout : i == MI_DAMAGE ? &g_damageNumbers : 0;
     if (b) wcat(out, *b ? (const wchar*)L", on" : (const wchar*)L", off", max);
+    if (i == MI_AUTOREAD) { wcat(out, (const wchar*)L", ", max); wcat(out, autoread_name(g_autoRead), max); }
     if (i == MI_FRAMES) wcat(out, g_frameData == 2 ? (const wchar*)L", plus and minus only" : g_frameData ? (const wchar*)L", detailed" : (const wchar*)L", off", max);
     int c = item_cat(i), v = i == MI_VOLUME ? g_volume : c >= 0 ? g_cv[c] : -1;
     if (v == 0) wcat(out, (const wchar*)L", off", max);
@@ -2671,7 +2684,7 @@ static void menu_move(int d)
 static void menu_change(int d, int activate)
 {
     int i = g_menuItem, c = item_cat(i);
-    int* b = i == MI_COMBO ? &g_comboReadout : i == MI_DAMAGE ? &g_damageNumbers : i == MI_AUTOREAD ? &g_autoRead : 0;
+    int* b = i == MI_COMBO ? &g_comboReadout : i == MI_DAMAGE ? &g_damageNumbers : 0;
     if (i == MI_VOLUME || c >= 0) {
         if (activate) { menu_preview(i); return; }   /* A/Enter: just listen */
         int* v = i == MI_VOLUME ? &g_volume : &g_cv[c];
@@ -2686,6 +2699,7 @@ static void menu_change(int d, int activate)
         return;
     }
     if (b) *b = !*b;
+    else if (i == MI_AUTOREAD) g_autoRead = (g_autoRead + (d < 0 ? 2 : 1)) % 3;   /* off, everywhere, except during fights */
     else if (i == MI_FRAMES) {   /* off, detailed, plus and minus only */
         g_frameData = (g_frameData + (d < 0 ? 2 : 1)) % 3;
         if (g_frameData) g_frameLast = g_frameData;
@@ -2762,7 +2776,11 @@ static void poll_keys(void)
     if (f9) speak_force((const wchar*)(L"MKX Access version " VERSION));
     if (f5) { static wchar again[2048]; wcpy(again, g_last[0] ? g_last : (const wchar*)L"Nothing yet", 2048); speak(again, 1); }
     if (f6 && !entry_read()) read_screen();
-    if (f7) { g_autoRead = !g_autoRead; settings_save(); speak_force(g_autoRead ? (const wchar*)L"Auto read on" : (const wchar*)L"Auto read off"); }
+    if (f7) {   /* off -> everywhere -> everywhere except during fights -> off */
+        g_autoRead = (g_autoRead + 1) % 3; settings_save();
+        static wchar line[64]; wcpy(line, (const wchar*)L"Auto read ", 64); wcat(line, autoread_name(g_autoRead), 64);
+        speak_force(line);
+    }
     if (f8) { g_muted = !g_muted; speak_force(g_muted ? (const wchar*)L"MKX Access muted" : (const wchar*)L"MKX Access on"); }
 }
 

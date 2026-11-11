@@ -98,6 +98,11 @@ opponent use the same sounds; the side they come from tells you who.
 Accessibility menu
 - Open it with F3, or hold Back and press Y on the controller. While it
   is open, the game gets no key presses or button presses.
+- Auto read has three choices: off, everywhere, or everywhere except
+  during fights. "Except during fights" keeps fights quiet (no
+  "KOUNTER", "FIRST HIT" and similar) but still reads the pause menu,
+  results and everything outside fights. Damage, combo and frame data
+  readouts have their own settings and are not affected.
 - Up and down choose, left and right change, B or Escape closes (or F3,
   or Back and Y again).
 - In order: Auto read, Hit and combo readout, Combo damage numbers,
@@ -221,8 +226,9 @@ HOTKEYS (only while the game window is in front)
   F6  read everything on the current screen. Use this if a screen
       seems silent. While typing a name or message, F6 reads
       what you have typed so far.
-  F7  turn auto-reading of new text on or off. Menus still read
-      when this is off.
+  F7  auto read of new text: each press goes to the next choice,
+      off, everywhere, or everywhere except during fights. Menus
+      still read when it is off.
   F8  mute or unmute the mod
   F9  say which version of the mod is running
   F10 turn damage numbers on or off (hit levels and combos stay)
