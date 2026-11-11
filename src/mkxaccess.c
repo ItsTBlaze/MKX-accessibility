@@ -14,7 +14,7 @@
    Everything is also written to MKXAccess.log next to the game exe. */
 #include "win.h"
 
-#define VERSION L"0.9.20"
+#define VERSION L"0.9.21"
 #define FOCUS_DELAY 70   /* ms to wait after focus moves, for descriptions to arrive */
 #define IMAGE_BASE 0x140000000ULL
 
@@ -416,7 +416,7 @@ static void hk_playerTick(void* info)
             int dmg = o->max > 0 ? (int)((g_fdLifeBefore - o->life) * 1000.0f / o->max + 0.5f) : 0;
             if (dmg < 0) dmg = 0;
             if (e) { e->type = EV_FRAMES; e->x = g_fdStartup; e->y = g_fdOppFree - g_fdYouFree; e->id = (u64)(g_fdBlock | (g_fdKd << 1) | ((u64)dmg << 8)); q_end(); }
-        } else if (tick - g_fdBegin > 600) g_fdActive = 0;   /* 10 seconds: give up */
+        } else if (tick - g_fdBegin > 2400) g_fdActive = 0;   /* 40 seconds (an X-ray and a long combo fit): give up */
     }
     g_fdPrevOppBusy = ob; g_fdPrevOppLife = o->life;
 }
@@ -902,8 +902,13 @@ static wchar g_frameLine[128]; static DWORD g_frameT;
 static void frames_result(int startup, int adv, int flags)
 {
     static wchar line[128]; line[0] = 0;
-    if (startup > 0 && startup < 200 && g_frameData != 2) { wcpy(line, (const wchar*)L"start-up ", 128); wcat_u(line, (u64)startup, 128); }   /* detailed only */
-    if (line[0]) wcat(line, (const wchar*)L", ", 128);
+    /* detailed, with the hit readout off: how many hits it was (the combo counter) */
+    if (g_frameData == 1 && !g_comboReadout && !(flags & 1) && GetTickCount() - g_combo[0].t < 6000) {
+        int hits = 0; for (int i = 0; g_combo[0].hits[i] >= '0' && g_combo[0].hits[i] <= '9'; i++) hits = hits * 10 + (g_combo[0].hits[i] - '0');
+        if (hits > 1) { wcat_u(line, (u64)hits, 128); wcat(line, (const wchar*)L" hit combo, ", 128); }
+    }
+    if (startup > 0 && startup < 200 && g_frameData != 2) { wcat(line, (const wchar*)L"start-up ", 128); wcat_u(line, (u64)startup, 128); }   /* detailed only */
+    { int n = wlen(line); if (n && !(n >= 2 && line[n - 2] == ',' && line[n - 1] == ' ')) wcat(line, (const wchar*)L", ", 128); }
     if (flags & 2) wcat(line, (const wchar*)L"knockdown, ", 128);   /* and still the advantage */
     if (adv > 0) wcat(line, (const wchar*)L"plus ", 128); else if (adv < 0) wcat(line, (const wchar*)L"minus ", 128);
     wcat_u(line, (u64)(adv < 0 ? -adv : adv), 128);
