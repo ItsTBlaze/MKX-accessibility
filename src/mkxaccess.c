@@ -14,7 +14,7 @@
    Everything is also written to MKXAccess.log next to the game exe. */
 #include "win.h"
 
-#define VERSION L"0.9.16"
+#define VERSION L"0.9.17"
 #define FOCUS_DELAY 70   /* ms to wait after focus moves, for descriptions to arrive */
 #define IMAGE_BASE 0x140000000ULL
 
@@ -1439,6 +1439,11 @@ static void movelist_frames(wchar* out, int max)
     focusInput[n + 29] = 0;   /* strlen(tail) */
     Entry* in = entry_at(focusInput);
     if (!in || !in->text[0]) return;   /* a heading, not a move */
+    {   /* jump attacks and the like have no real data: everything 0 */
+        Entry* act = entry_at("_root.MoveListBaseLayer.Elements.FrameDataLayer.Cell_2.Text1.Text");
+        Entry* rec = entry_at("_root.MoveListBaseLayer.Elements.FrameDataLayer.Cell_3.Text1.Text");
+        if (act && rec && act->text[0] == '0' && !act->text[1] && rec->text[0] == '0' && !rec->text[1]) return;
+    }
     static const int order[9] = { 0, 1, 2, 3, 6, 7, 8, 4, 5 };
     static const char* names[9] = { "", "start-up", "active", "recovery", "damage", "block damage", "on block", "on hit", "cancel" };
     static wchar line[512]; line[0] = 0;
@@ -1510,6 +1515,23 @@ static void announce_focus(void)
         anc[L - 1] = 0;
     }
     if (!found) anc[0] = 0;
+    /* move list cells keep text from the other pages (a heading's FocusText2 on one page,
+       a move's FocusText0/1 on another), so a cell can hold more than 4 texts: read it
+       directly. Whichever was set last is this page's: the move's name and buttons, or
+       the heading. */
+    if (contains_ci(g_focusPath, "MoveListBaseLayer.Elements.GridSelectInterface.Cell_") && !found) {
+        char base[PATHMAX]; int bl = 0;
+        for (; g_focusPath[bl] && bl < PATHMAX - 40; bl++) base[bl] = (char)g_focusPath[bl];
+        const char* sub[3] = { ".FocusElement.FocusText0.Text", ".FocusElement.FocusText1.Text", ".FocusElement.FocusText2.Text" };
+        Entry* t[3];
+        for (int k = 0; k < 3; k++) { int q = bl; for (const char* c = sub[k]; *c; c++) base[q++] = *c; base[q] = 0; t[k] = entry_at(base); if (t[k] && !t[k]->text[0]) t[k] = 0; }
+        int heading = t[2] && (!t[0] || (int)(t[2]->touched - t[0]->touched) > 50);
+        if (heading) add_part(out, 2048, t[2]->text, &count);
+        else { if (t[0]) add_part(out, 2048, t[0]->text, &count); if (t[1]) add_part(out, 2048, t[1]->text, &count); }
+        wcpy(anc, g_focusPath, PATHMAX);   /* its texts are not read again below */
+        wcpy(g_focusItem, anc, PATHMAX);
+        found = 2;
+    }
     /* the list that holds the focused item: its other items are not read */
     static wchar list[PATHMAX]; list[0] = 0;
     if (anc[0]) {
@@ -1522,7 +1544,7 @@ static void announce_focus(void)
             if (level == 2) list[0] = 0;
         }
     }
-    if (anc[0]) {
+    if (anc[0] && found != 2) {
         /* pages that share slots (Audio and Gameplay options both use Cell_0...) leave the
            old page's text behind, hidden. Only keep text set since the list was last filled. */
         DWORD rebuilt = list[0] ? last_rebuild(list) : 0;
@@ -2552,7 +2574,11 @@ static void poll_keys(void)
     }
     if (f3) { g_menuOpen = 1; menu_show(); return; }
     if (f11) steam_invite_key((GetAsyncKeyState(0x10) & 0x8000) != 0, (GetAsyncKeyState(0x11) & 0x8000) != 0);
-    if (f10 && (GetAsyncKeyState(0x11) & 0x8000)) {   /* Ctrl+F10: hit and combo readout */
+    if (f10 && (GetAsyncKeyState(0x11) & 0x8000) && (GetAsyncKeyState(0x10) & 0x8000)) {   /* Ctrl+Shift+F10: frame data in practice */
+        g_frameData = !g_frameData; settings_save();
+        speak_force(g_frameData ? (const wchar*)L"Frame data on" : (const wchar*)L"Frame data off");
+    }
+    else if (f10 && (GetAsyncKeyState(0x11) & 0x8000)) {   /* Ctrl+F10: hit and combo readout */
         g_comboReadout = !g_comboReadout; settings_save();
         speak_force(g_comboReadout ? (const wchar*)L"Hit and combo readout on" : (const wchar*)L"Hit and combo readout off");
     }
