@@ -14,7 +14,7 @@
    Everything is also written to MKXAccess.log next to the game exe. */
 #include "win.h"
 
-#define VERSION L"0.9.22"
+#define VERSION L"0.9.23"
 #define FOCUS_DELAY 70   /* ms to wait after focus moves, for descriptions to arrive */
 #define IMAGE_BASE 0x140000000ULL
 
@@ -914,9 +914,9 @@ static void frames_result(int startup, int adv, int flags)
     if (adv > 0) wcat(line, (const wchar*)L"plus ", 128); else if (adv < 0) wcat(line, (const wchar*)L"minus ", 128);
     wcat_u(line, (u64)(adv < 0 ? -adv : adv), 128);
     wcat(line, (flags & 1) ? (const wchar*)L" on block" : (const wchar*)L" on hit", 128);
-    /* detailed: the damage too (on a hit only when the hit readout, which says it, is off) */
+    /* detailed: the damage too (on a hit only when damage numbers, which say it, are off) */
     int dmg = flags >> 8;
-    if (g_frameData == 1 && dmg > 0 && ((flags & 1) || !g_comboReadout)) {
+    if (g_frameData == 1 && dmg > 0 && ((flags & 1) || !g_damageNumbers)) {
         wcat(line, (flags & 1) ? (const wchar*)L", block damage " : (const wchar*)L", damage ", 128);
         wcat_u(line, (u64)(dmg / 10), 128);
         if (dmg % 10) { wcat(line, (const wchar*)L".", 128); wcat_u(line, (u64)(dmg % 10), 128); }
@@ -958,7 +958,10 @@ static void fight_tick(DWORD now)
             if (line[0]) wcat(line, (const wchar*)L", ", 96);
             wcat(line, pct, 96);
         }
-        if (!g_comboReadout) line[0] = 0;
+        if (!g_comboReadout) {   /* damage numbers on their own: just the damage */
+            line[0] = 0;
+            if (g_damageNumbers && g_hitDmg[0]) say_percent(g_hitDmg, line, 96);
+        }
         frames_join(line, 96);
         if (line[0]) speak(line, 1);
     }
@@ -983,7 +986,7 @@ static void fight_tick(DWORD now)
             wcpy(line, (const wchar*)L"throw", 128);
             if (c->dmg[0] && g_damageNumbers) { wchar pct[48]; say_percent(c->dmg, pct, 48); wcat(line, (const wchar*)L", ", 128); wcat(line, pct, 128); }
             g_seq[0] = 0; g_seqN = 0;
-            if (!g_comboReadout) line[0] = 0;
+            if (!g_comboReadout) { line[0] = 0; if (g_damageNumbers && c->dmg[0]) say_percent(c->dmg, line, 128); }
             frames_join(line, 128);
             if (line[0]) speak(line, 1);
             continue;
@@ -995,7 +998,7 @@ static void fight_tick(DWORD now)
         wcpy(full, line, 400);
         if (s == 0 && g_seqN == hits && (int)(c->t - g_seqT) >= -100 && (int)(c->t - g_seqT) <= 100) { wcat(full, (const wchar*)L", ", 400); wcat(full, g_seq, 400); }
         if (s == 0) { g_seq[0] = 0; g_seqN = 0; }   /* this string is done */
-        if (!g_comboReadout) full[0] = 0;
+        if (!g_comboReadout) { full[0] = 0; if (g_damageNumbers && c->dmg[0]) say_percent(c->dmg, full, 400); }
         if (s == 0) frames_join(full, 400);   /* your combo */
         if (full[0]) speak(full, 1);
     }
