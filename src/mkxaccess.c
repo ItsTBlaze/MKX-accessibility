@@ -583,6 +583,7 @@ static void clean_text(const wchar* in0, wchar* out, int max)
     int o = 0, space = 1;
     for (int i = 0; in[i] && o < max - 1; i++) {
         wchar c = in[i];
+        if (c == 0xB7 || c == 0x2022) c = ' ';   /* a bullet in front of move notes */
         if (c == '<') {
             /* <br> and </p> count as a space */
             while (in[i] && in[i] != '>') i++;
@@ -727,7 +728,8 @@ static int ignored_path(const wchar* p)
 {
     return contains_ci(p, "ButtonLogs") || contains_ci(p, "wbPlayWindow") || contains_ci(p, "BenchmarkStats") ||
            contains_ci(p, "versionNumber") || starts_ci(p, "_root.legal.") || contains_ci(p, "panel.news") ||
-           contains_ci(p, "MinimapContainer.timer") || contains_ci(p, "MapSelection");
+           contains_ci(p, "MinimapContainer.timer") || contains_ci(p, "MapSelection") ||
+           contains_ci(p, "FrameDataLayer");   /* read with the move it belongs to (movelist_frames) */
 }
 
 /* ------------------------------------------------------------------ */
@@ -1383,6 +1385,61 @@ static void challenge_tick(DWORD now)
     say(line, 0);
 }
 
+/* the practice move list shows the selected move's frame data in a panel:
+   _root.MoveListBaseLayer.Elements.FrameDataLayer.Cell_0..8, Text0 the label (MOVE TYPE:,
+   START-UP:, ACTIVE:, RECOVER:, DAMAGE:, BLOCK DAMAGE:, BLOCK ADV:, HIT ADV:, CANCEL:) and
+   Text1 the value. It is read after the move's name and buttons, advantages right after
+   the frame counts: "High, start-up 11, active 3, recovery 13, plus 2 on block, plus 24 on
+   hit, cancel 20, damage 2 percent, block damage 0.4 percent". Only for a move (a cell with
+   buttons); values the game marks N/A are left out. */
+static void wcat_a(wchar* d, const char* s, int max) { int n = wlen(d); for (int i = 0; s[i] && n < max - 1; i++) d[n++] = (wchar)(BYTE)s[i]; d[n] = 0; }
+static void movelist_frames(wchar* out, int max)
+{
+    char focusInput[PATHMAX]; int n = 0;
+    for (; g_focusPath[n] && n < PATHMAX - 40; n++) focusInput[n] = (char)g_focusPath[n];
+    focusInput[n] = 0;
+    const char* tail = ".FocusElement.FocusText1.Text";
+    for (int k = 0; tail[k]; k++) focusInput[n + k] = tail[k];
+    focusInput[n + 29] = 0;   /* strlen(tail) */
+    Entry* in = entry_at(focusInput);
+    if (!in || !in->text[0]) return;   /* a heading, not a move */
+    static const int order[9] = { 0, 1, 2, 3, 6, 7, 8, 4, 5 };
+    static const char* names[9] = { "", "start-up", "active", "recovery", "damage", "block damage", "on block", "on hit", "cancel" };
+    static wchar line[512]; line[0] = 0;
+    for (int j = 0; j < 9; j++) {
+        int c = order[j];
+        char path[96] = "_root.MoveListBaseLayer.Elements.FrameDataLayer.Cell_0.Text1.Text";
+        path[53] = (char)('0' + c);
+        Entry* v = entry_at(path);
+        if (!v || !v->text[0]) continue;   /* (the game sets every cell for each move) */
+        const wchar* t = v->text;
+        if (t[0] == '-' && (!t[1] || t[1] == '-')) continue;   /* no value */
+        if ((t[0] == 'N' || t[0] == 'n') && t[1] == '/' && (t[2] == 'A' || t[2] == 'a') && !t[3]) continue;   /* N/A */
+        wchar val[64]; int m = 0;
+        for (int i = 0; t[i] && m < 60; i++) {
+            if (t[i] == '%') { const char* w = " percent"; while (*w && m < 60) val[m++] = (wchar)*w++; }
+            else val[m++] = t[i];
+        }
+        val[m] = 0;
+        /* "2.00 percent" -> "2 percent", "0.40 percent" -> "0.4 percent" */
+        for (int i = 0; val[i]; i++) if (val[i] == '.') {
+            int e = i + 1; while (val[e] >= '0' && val[e] <= '9') e++;
+            int z = e; while (z > i + 1 && val[z - 1] == '0') z--;
+            int from = z == i + 1 ? i : z;
+            int q = from; for (int r = e; ; r++) { val[q++] = val[r]; if (!val[r]) break; }
+            break;
+        }
+        if (line[0]) wcat(line, (const wchar*)L", ", 512);
+        if (c == 6 || c == 7) {   /* advantage: plus or minus, then on block / on hit */
+            int neg = val[0] == '-', num = (val[0] >= '0' && val[0] <= '9') || (neg && val[1] >= '0' && val[1] <= '9');
+            if (num && !(val[neg] == '0' && !val[neg + 1])) wcat(line, neg ? (const wchar*)L"minus " : (const wchar*)L"plus ", 512);
+            wcat(line, val + (num && neg), 512); wcat(line, (const wchar*)L" ", 512); wcat_a(line, names[c], 512);
+        } else if (c == 0) wcat(line, val, 512);
+        else { wcat_a(line, names[c], 512); wcat(line, (const wchar*)L" ", 512); wcat(line, val, 512); }
+    }
+    if (line[0]) { if (out[0]) wcat(out, (const wchar*)L", ", max); wcat(out, line, max); }
+}
+
 static void announce_focus(void)
 {
     static wchar out[2048]; out[0] = 0; int count = 0;
@@ -1509,6 +1566,7 @@ static void announce_focus(void)
             if (e && e->text[0]) add_part(out, 2048, e->text, &count);
         }
     }
+    if (contains_ci(g_focusPath, "MoveListBaseLayer.Elements.GridSelectInterface.Cell_")) movelist_frames(out, 2048);
     if (out[0]) say(out, 1);
 }
 
@@ -1896,7 +1954,6 @@ static int g_volume = 80;   /* percent: everything the mod plays */
 enum { C_HEALTH_YOU, C_HEALTH_OPP, C_XRAY_YOU, C_XRAY_OPP, C_HUM, C_MENU, NCAT };
 static int g_cv[NCAT] = { -1, -1, -1, -1, -1, -1 };   /* -1 until loaded: then 100 or the old on/off */
 static int g_stereo = 1;    /* health and X-ray sounds come from the side of that fighter's health bar (always) */
-static void wcat_a(wchar* d, const char* s, int max) { int n = wlen(d); for (int i = 0; s[i] && n < max - 1; i++) d[n++] = (wchar)(BYTE)s[i]; d[n] = 0; }
 static void wcat_u(wchar* d, u64 v, int max) { wchar num[24]; utoa_w(v, num, 10, 1); wcat(d, num, max); }
 static unsigned rd32(const BYTE* p) { return p[0] | (p[1] << 8) | (p[2] << 16) | ((unsigned)p[3] << 24); }
 static void wr32(BYTE* p, unsigned v) { p[0] = (BYTE)v; p[1] = (BYTE)(v >> 8); p[2] = (BYTE)(v >> 16); p[3] = (BYTE)(v >> 24); }
@@ -2252,6 +2309,8 @@ static void health_tick(DWORD now)
             wcat(line, f[p].ai ? (const wchar*)L" computer" : (const wchar*)L" human", 256);
         }
         wcat(line, g_you ? (const wchar*)L" -> you are P2" : (const wchar*)L" -> you are P1", 256);
+        { int mode = readable((void*)(fg + 0x198C), 4) ? *(int*)(fg + 0x198C) : -1;   /* FG_GAME_INFO::GetGameMode */
+          wcat(line, (const wchar*)L" mode ", 256); wcat_u(line, (u64)(mode < 0 ? 0 : mode), 256); }
         logf3((const wchar*)L"FIGHTERS", 0, line);
         for (int p = 0; p < 2; p++) { g_hpObj[p] = f[p].obj; g_hpLevel[p] = hp_level(f[p].life / f[p].max); g_hpLife[p] = f[p].life; }
         g_combo[0].dirty = g_combo[1].dirty = 0;   /* nothing from the last fight carries over */
