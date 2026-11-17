@@ -15,13 +15,13 @@ In practice mode it reads frame data: each move's full frame data in the move li
 and after each of your attacks the measured start-up and advantage on hit or block
 ("start-up 11, plus 24 on hit"), detailed or plus and minus only.
 
-Status: early testing (version 0.9.24). Feedback is very welcome; see
+Status: early testing (version 0.9.25). Feedback is very welcome; see
 [Reporting problems](#reporting-problems).
 
 ## Install
 
 1. Download **[MKXAccess.zip](https://github.com/ItsTBlaze/MKX-accessibility/raw/main/download/MKXAccess.zip)**.
-   This link always gets the newest version (currently 0.9.24).
+   This link always gets the newest version (currently 0.9.25).
 2. Unzip it, and make sure Mortal Kombat X is closed.
 3. Open the unzipped MKXAccess folder and run **Install**. It finds the game on its
    own and tells you when it's done. Windows may ask whether to run a file from the
