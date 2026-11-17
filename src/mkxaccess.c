@@ -14,7 +14,7 @@
    Everything is also written to MKXAccess.log next to the game exe. */
 #include "win.h"
 
-#define VERSION L"0.9.24"
+#define VERSION L"0.9.25"
 #define FOCUS_DELAY 70   /* ms to wait after focus moves, for descriptions to arrive */
 #define IMAGE_BASE 0x140000000ULL
 
@@ -1798,9 +1798,29 @@ static const wchar* autoread_name(int v)
 {
     return v == 2 ? (const wchar*)L"everywhere except during fights" : v ? (const wchar*)L"everywhere" : (const wchar*)L"off";
 }
+/* Choices the game changes in place, without moving the highlight. They are part
+   of a menu, so they are read even with auto read off:
+   - the difficulty picker after character select ("MEDIUM, CHOOSE YOUR DIFFICULTY")
+   - popup questions and messages with buttons ("Are you sure you want to quit the
+     game?, YES, A, NO, B"); their buttons are added when the message is read */
+static int is_menu_choice(Entry* e)
+{
+    if (contains_ci(e->path, "difficultySelect.")) return 1;
+    if (!contains_ci(e->path, "msgBox") || contains_ci(e->path, "navigationGroup")) return 0;
+    int n = wlen(e->text);
+    if (n && e->text[n - 1] == '?') return 1;
+    for (int j = 0; j < NENT; j++) {   /* a message that came with buttons */
+        Entry* o = &g_ent[j];
+        if (!o->used || !o->text[0] || !contains_ci(o->path, "msgBox") || !contains_ci(o->path, "navigationGroup")) continue;
+        int d = (int)(o->touched - e->touched);
+        if (d > -400 && d < 400) return 1;
+    }
+    return 0;
+}
 static void auto_read(DWORD now)
 {
-    if (!g_autoRead || g_focusPending) return;
+    if (g_focusPending) return;
+    int choicesOnly = !g_autoRead;   /* auto read off: only menu choices (above) */
     if (g_autoRead == 2 && in_fight()) {   /* quiet until the fight is over; nothing saved up for later */
         int st = g_nrecent > NRECENT ? g_nrecent - NRECENT : 0;
         for (int k = st; k < g_nrecent; k++) g_recentSpoken[k % NRECENT] = 1;
@@ -1824,6 +1844,7 @@ static void auto_read(DWORD now)
         Entry* e = &g_ent[g_recent[s]];
         if (e->gen != g_recentGen[s] || is_busy(e, now) || !e->text[0] || (no_letters(e->text) && !is_price(e->path))) continue;
         if (ends_with_colon(e->text)) continue;   /* a label waiting for its value, e.g. "WINS:" */
+        if (choicesOnly && !is_menu_choice(e)) continue;
         if (contains_ci(e->path, "PlayerListGridSelectElement.Cell_") || contains_ci(e->path, "RoomListGridSelectElement.Cell_") ||
             contains_ci(e->path, "PlayerSlotGridSelectElement.Cell_") || contains_ci(e->path, "radialSelect.")) continue;   /* read on focus */
         if (now - g_lastTime < 3000 && wlen(e->text) >= 8 && contains_w(g_last, e->text)) continue;   /* just said it */
