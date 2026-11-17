@@ -1,4 +1,4 @@
-MKX Access 0.9.26 - screen reader support for Mortal Kombat X
+MKX Access 0.9.27 - screen reader support for Mortal Kombat X
 =============================================================
 
 MKX Access makes Mortal Kombat X (Steam, PC) speak through the NVDA
@@ -130,6 +130,19 @@ Rooms
 - If a player's ping or record updates while you're on them, the new
   value is read with its label: "ping 85 milliseconds".
 - Player options (A on a player) and the chat box (X) are read.
+
+Kombat History (Extras > Offline Kombat History, and the online one)
+- Each tab's stats are read when you move to the tab, after its name:
+  "STORY, ... MATCHES 30, WINS 9, LOSSES 21, WIN % 30%". Stats with no
+  value yet say "none".
+- Offline Character History reads the top row of the list when you
+  open it, and again each time the list stops scrolling:
+  "rank 1, MILEENA, 9 wins, 29 losses, 23%".
+- Progression Rewards reads each challenge with its progress and
+  reward: "BREAKER - LEVEL 1, BREAKERS PERFORMED 6 of 10, reward +250
+  EXP +100 KOINS".
+- Press NVDA's Control key to stop a long readout, or F5 to hear it
+  again.
 
 Test Your Luck
 - The number of modifiers is read as you change it:

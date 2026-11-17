@@ -14,7 +14,7 @@
    Everything is also written to MKXAccess.log next to the game exe. */
 #include "win.h"
 
-#define VERSION L"0.9.26"
+#define VERSION L"0.9.27"
 #define FOCUS_DELAY 70   /* ms to wait after focus moves, for descriptions to arrive */
 #define IMAGE_BASE 0x140000000ULL
 
@@ -831,6 +831,7 @@ static wchar g_lastFocus[PATHMAX]; static DWORD g_lastFocusT;
 static wchar g_focusItem[PATHMAX];   /* parent holding the focused item's labels */
 static void* g_valEntry; static int g_valGen; static DWORD g_valT;   /* value change waiting to be said */
 static DWORD g_burstT; static int g_burstN;                           /* texts set within 50 ms */
+static int is_hist_page(const wchar* path);
 
 static int is_child_path(const wchar* child, const wchar* parent);
 static void say(const wchar* raw, int interrupt);
@@ -1753,6 +1754,7 @@ static void announce_focus(void)
         g_recentSpoken[s] = 1;
         Entry* e = &g_ent[g_recent[s]];
         if (contains_ci(e->path, "PlayerSlotGridSelectElement.Cell_")) continue;   /* King of the Hill slots: read on their own focus */
+        if (is_hist_page(e->path)) continue;   /* Kombat History page contents: read by hist_tick */
         if (e->gen != g_recentGen[s] || !e->text[0]) continue;
         if (list[0] && is_child_path(e->path, list) && !(anc[0] && is_child_path(e->path, anc)) && !is_titleish(e->path) && !is_prompt(e->path)) continue;
         if (no_letters(e->text) && !(anc[0] && is_child_path(e->path, anc))) continue;
@@ -1821,6 +1823,12 @@ static int is_menu_choice(Entry* e)
     }
     return 0;
 }
+static int is_hist_page(const wchar* path)
+{
+    return contains_ci(path, "StatsPageInterface.StatsPageElementsInterface.StatTextInterface") ||
+           contains_ci(path, "HistoryPageInterface.HistoryPageElementsInterface.CharacterListElements") ||
+           contains_ci(path, "ProgressPageInterface.ProgressPageElementsInterface.progressChallenge");
+}
 /* the number picker in the difficulty box: "CHOOSE NUMBER OF MODIFIERS" in Test Your Luck */
 static int is_count_choice(const wchar* path) { return contains_ci(path, "difficultySelect.optionBox"); }
 
@@ -1840,6 +1848,131 @@ static void reel_path(char* path, int r, const char* tail)
     path[n] = 0;
 }
 static DWORD g_reelDue[10];
+
+/* Kombat History (Extras > Offline Kombat History). The tabs along the top get focus,
+   but the page under them has nothing to move through, so its contents are read
+   when a tab is chosen:
+   - stats tabs (OVERVIEW, STORY, TOWERS...): every stat with its value,
+     "MATCHES 30, WINS 9, LOSSES 21, WIN % 30%"
+   - OFFLINE CHARACTER HISTORY: a list that scrolls one row at a time; the top row
+     is read when the tab opens and after each scroll, "rank 2, BO' RAI CHO, 0 wins,
+     0 losses, 0%"
+   - PROGRESSION REWARDS: each challenge with its progress and reward */
+static DWORD g_histDue, g_histFocusT, g_histRowDue; static int g_histKind;
+#define HIST_STAT "_root.BaseElements.StatsPageInterface.StatsPageElementsInterface.StatTextInterface.Cell_"
+#define HIST_ROW "_root.BaseElements.HistoryPageInterface.HistoryPageElementsInterface.CharacterListElements.CharacterHistory_0."
+#define HIST_PROG "_root.BaseElements.ProgressPageInterface.ProgressPageElementsInterface.progressChallenge"
+static Entry* hist_entry(const char* a, int i, const char* b)
+{
+    char path[200]; int n = 0;
+    while (*a && n < 150) path[n++] = *a++;
+    if (i >= 10) path[n++] = (char)('0' + i / 10);
+    path[n++] = (char)('0' + i % 10);
+    while (*b && n < 198) path[n++] = *b++;
+    path[n] = 0;
+    return entry_at(path);
+}
+static void hist_join(wchar* out, int max, const wchar* sep, const wchar* a)
+{
+    if (out[0]) wcat(out, sep, max);
+    wcat(out, a, max);
+}
+static void hist_stats(wchar* out, int max)
+{
+    /* each tab shows its own number of stats; cells it doesn't use keep the last
+       tab's text, so count the cells this tab set (and remember the most per tab,
+       since a cell whose text didn't change isn't set again) */
+    static wchar names[16][48]; static int counts[16]; static int nnames;
+    Entry* title = entry_at("_root.BaseElements.StatsPageInterface.StatsPageElementsInterface.TitleTextElement.Text");
+    int n = 0;
+    for (int i = 0; i < 40; i++) {
+        Entry* t = hist_entry(HIST_STAT, i, ".FocusElement.title.TitleText");
+        Entry* v = hist_entry(HIST_STAT, i, ".FocusElement.value.ValueText");
+        if ((t && (int)(t->touched - g_histFocusT) >= -50) || (v && (int)(v->touched - g_histFocusT) >= -50)) n = i + 1;
+    }
+    if (title && title->text[0]) {
+        int k = 0; while (k < nnames && !weq(names[k], title->text)) k++;
+        if (k == nnames && nnames < 16) { wcpy(names[k], title->text, 48); counts[k] = 0; nnames++; }
+        if (k < nnames) { if (n > counts[k]) counts[k] = n; n = counts[k]; }
+    }
+    for (int i = 0; i < n; i++) {
+        Entry* t = hist_entry(HIST_STAT, i, ".FocusElement.title.TitleText");
+        if (!t || !t->text[0]) continue;
+        Entry* v = hist_entry(HIST_STAT, i, ".FocusElement.value.ValueText");
+        static wchar part[TEXTMAX * 2];
+        wcpy(part, t->text, TEXTMAX * 2); wcat(part, (const wchar*)L" ", TEXTMAX * 2);
+        wcat(part, v && v->text[0] ? v->text : (const wchar*)L"none", TEXTMAX * 2);
+        hist_join(out, max, (const wchar*)L", ", part);
+    }
+}
+static void hist_row(wchar* out, int max)
+{
+    Entry* rank = entry_at(HIST_ROW "rank.RankText");
+    Entry* name = entry_at(HIST_ROW "character.CharacterNameText");
+    Entry* wins = entry_at(HIST_ROW "wins.WinsText");
+    Entry* loss = entry_at(HIST_ROW "losses.LossesText");
+    Entry* pct = entry_at(HIST_ROW "winPercent.WinPercentText");
+    if (!name || !name->text[0]) return;
+    if (rank && rank->text[0]) { wcat(out, (const wchar*)L"rank ", max); wcat(out, rank->text, max); wcat(out, (const wchar*)L", ", max); }
+    wcat(out, name->text, max);
+    if (wins && wins->text[0]) { wcat(out, (const wchar*)L", ", max); wcat(out, wins->text, max); wcat(out, weq(wins->text, (const wchar*)L"1") ? (const wchar*)L" win" : (const wchar*)L" wins", max); }
+    if (loss && loss->text[0]) {   /* shown as "/ 29" */
+        const wchar* l = loss->text; while (*l == '/' || *l == ' ') l++;
+        wcat(out, (const wchar*)L", ", max); wcat(out, l, max); wcat(out, weq(l, (const wchar*)L"1") ? (const wchar*)L" loss" : (const wchar*)L" losses", max);
+    }
+    if (pct && pct->text[0]) { wcat(out, (const wchar*)L", ", max); wcat(out, pct->text, max); }
+}
+static void hist_progress(wchar* out, int max)
+{
+    for (int i = 0; i < 40; i++) {
+        Entry* t = hist_entry(HIST_PROG, i, ".challengeTitle.text");
+        if (!t || !t->text[0]) continue;
+        Entry* d = hist_entry(HIST_PROG, i, ".challengeDesc.text");
+        Entry* p = hist_entry(HIST_PROG, i, ".progNum.text");
+        Entry* r = hist_entry(HIST_PROG, i, ".rewardDesc.text");
+        static wchar part[TEXTMAX * 4]; int m = TEXTMAX * 4;
+        wcpy(part, t->text, m);
+        if (d && d->text[0]) { wcat(part, (const wchar*)L", ", m); wcat(part, d->text, m); }
+        if (p && p->text[0]) {   /* "6/10" -> "6 of 10" */
+            wcat(part, (const wchar*)L" ", m);
+            int o = wlen(part);
+            for (const wchar* c = p->text; *c && o < m - 5; c++) {
+                if (*c == '/') { part[o++] = ' '; part[o++] = 'o'; part[o++] = 'f'; part[o++] = ' '; }
+                else part[o++] = *c;
+            }
+            part[o] = 0;
+        }
+        if (r && r->text[0]) { wcat(part, (const wchar*)L", reward ", m); wcat(part, r->text, m); }
+        hist_join(out, max, (const wchar*)L". ", part);
+    }
+}
+static void label_event(Event* ev)
+{
+    logf3((const wchar*)L"ANIM", ev->path[0] ? ev->path : (const wchar*)L"?", ev->text);
+}
+static void hist_tick(DWORD now)
+{
+    static wchar out[4096];
+    if (g_histDue && (int)(now - g_histDue) >= 0) {
+        g_histDue = 0; out[0] = 0;
+        if (g_histKind == 1) hist_stats(out, 4096);
+        else if (g_histKind == 2) hist_row(out, 4096);
+        else if (g_histKind == 3) hist_progress(out, 4096);
+        if (out[0]) say(out, 0);
+    }
+    /* the character list scrolls by refilling its rows; read the top row once it stops moving */
+    static DWORD rowChanged;
+    Entry* top = g_histKind == 2 ? entry_at(HIST_ROW "character.CharacterNameText") : 0;
+    if (top && top->changed != rowChanged) {
+        if (!g_histDue && (int)(top->changed - g_histFocusT) > 1000) g_histRowDue = now + 300;   /* not the page being filled in */
+        rowChanged = top->changed;
+    }
+    if (g_histRowDue && (int)(now - g_histRowDue) >= 0) {
+        g_histRowDue = 0; out[0] = 0;
+        hist_row(out, 4096);
+        if (out[0]) say(out, 1);
+    }
+}
 static void tyl_tick(DWORD now)
 {
     static int headerSaid;
@@ -1896,7 +2029,8 @@ static void auto_read(DWORD now)
         if (choicesOnly && !is_menu_choice(e)) continue;
         if (contains_ci(e->path, "PlayerListGridSelectElement.Cell_") || contains_ci(e->path, "RoomListGridSelectElement.Cell_") ||
             contains_ci(e->path, "PlayerSlotGridSelectElement.Cell_") || contains_ci(e->path, "radialSelect.") ||
-            contains_ci(e->path, "screenVis.reels.") || contains_ci(e->path, "screenVis.subtitleVis.")) continue;   /* read on focus / by tyl_tick */
+            contains_ci(e->path, "screenVis.reels.") || contains_ci(e->path, "screenVis.subtitleVis.") ||
+            is_hist_page(e->path)) continue;   /* read on focus / by tyl_tick / by hist_tick */
         if (now - g_lastTime < 3000 && wlen(e->text) >= 8 && contains_w(g_last, e->text)) continue;   /* just said it */
         int dup = 0; for (int i = 0; i < nc; i++) if (cand[i] == e) dup = 1;   /* only its latest value */
         if (!dup && nc < 64) cand[nc++] = e;
@@ -1986,6 +2120,10 @@ static void handle_focus(Event* ev)
         pth[n + 29] = 0;
         Entry* e = entry_at(pth);
         if (e && e->text[0]) { wcpy(g_mlPage, e->text, 64); g_mlPageT = ev->t; }
+        if (e && e->text[0] && starts_ci(ev->path, "_root.BaseElements.TopMenu.PageNavLayer")) {   /* Kombat History tab */
+            g_histKind = contains_ci(e->text, "CHARACTER HISTORY") ? 2 : contains_ci(e->text, "PROGRESSION") ? 3 : 1;
+            g_histFocusT = ev->t; g_histDue = ev->t + 400; g_histRowDue = 0;
+        }
     }
     if (g_focusPending && weq(g_focusPath, ev->path)) return;
     if (!g_focusPending && weq(g_lastFocus, ev->path) && ev->t - g_lastFocusT < 1000) return;   /* same item re-highlighted */
@@ -2873,6 +3011,7 @@ static void speech_tick(DWORD now)
     challenge_tick(now);
     entry_tick(now);
     tyl_tick(now);
+    hist_tick(now);
     if (g_valEntry && now - g_valT >= 40) {
         Entry* e = (Entry*)g_valEntry; g_valEntry = 0;
         int pageLoad = (g_burstT - g_valT < 60) && g_burstN > 3;
@@ -2925,7 +3064,7 @@ static DWORD WINAPI worker(void* arg)
             LeaveCriticalSection(&g_qlock);
             if (!have) break;
             if (ev.type <= EV_VHTML) handle_text(&ev);
-            else if (ev.type == EV_LABEL) logf3((const wchar*)L"ANIM", ev.path[0] ? ev.path : (const wchar*)L"?", ev.text);
+            else if (ev.type == EV_LABEL) label_event(&ev);
             else if (ev.type == EV_COMBOEND) combo_finished(&ev);
             else if (ev.type == EV_INVITE) steam_invite_requested(&ev);
             else if (ev.type == EV_LOBBYINVITE) steam_invite_received(&ev);
