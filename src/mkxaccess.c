@@ -2125,6 +2125,7 @@ static void handle_focus(Event* ev)
             g_histFocusT = ev->t; g_histDue = ev->t + 400; g_histRowDue = 0;
         }
     }
+    else if (g_histKind && !starts_ci(ev->path, "_root.BaseElements.")) g_histKind = 0;   /* left Kombat History: stop watching its list */
     if (g_focusPending && weq(g_focusPath, ev->path)) return;
     if (!g_focusPending && weq(g_lastFocus, ev->path) && ev->t - g_lastFocusT < 1000) return;   /* same item re-highlighted */
     wcpy(g_lastFocus, ev->path, PATHMAX); g_lastFocusT = ev->t;
