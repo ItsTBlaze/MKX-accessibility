@@ -3,7 +3,7 @@
 Screen reader support for **Mortal Kombat X** (Steam, PC). MKX Access reads the
 game's menus aloud through [NVDA](https://www.nvaccess.org/): menu items and their
 descriptions, option names with their values, character and variation select,
-move lists, damage and combos in fights, and popup messages. It also replaces Steam's unreadable invite window with a spoken friend list, and announces invites you receive so you can accept them from the game. In King of the Hill it reads each player in the theater (name, wins, losses, streak, ping), the theater's buttons, and the respect vote.
+move lists, damage and combos in fights, and popup messages. It also replaces Steam's unreadable invite window with a spoken friend list, and announces invites you receive so you can accept them from the game. It also reads Test Your Luck (the number of modifiers and each slot reel as it stops) and Kombat History (every stat on each tab, the character history list and progression rewards). In King of the Hill it reads each player in the theater (name, wins, losses, streak, ping), the theater's buttons, and the respect vote.
 
 In fights it plays sounds you can tune: health warnings at 75, 50 and 25 percent,
 an X-ray ready sound, and a hum that grows louder as a fighter nears a wall. Health
@@ -15,13 +15,13 @@ In practice mode it reads frame data: each move's full frame data in the move li
 and after each of your attacks the measured start-up and advantage on hit or block
 ("start-up 11, plus 24 on hit"), detailed or plus and minus only.
 
-Status: early testing (version 0.9.25). Feedback is very welcome; see
+Status: early testing (version 0.9.27). Feedback is very welcome; see
 [Reporting problems](#reporting-problems).
 
 ## Install
 
 1. Download **[MKXAccess.zip](https://github.com/ItsTBlaze/MKX-accessibility/raw/main/download/MKXAccess.zip)**.
-   This link always gets the newest version (currently 0.9.25).
+   This link always gets the newest version (currently 0.9.27).
 2. Unzip it, and make sure Mortal Kombat X is closed.
 3. Open the unzipped MKXAccess folder and run **Install**. It finds the game on its
    own and tells you when it's done. Windows may ask whether to run a file from the
