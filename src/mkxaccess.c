@@ -14,7 +14,7 @@
    Everything is also written to MKXAccess.log next to the game exe. */
 #include "win.h"
 
-#define VERSION L"0.9.25"
+#define VERSION L"0.9.26"
 #define FOCUS_DELAY 70   /* ms to wait after focus moves, for descriptions to arrive */
 #define IMAGE_BASE 0x140000000ULL
 
@@ -817,7 +817,11 @@ static Entry* lookup_entry(u64 key)
 typedef struct { u64 focus; u64 key[2]; } PromptMemo;
 static PromptMemo g_promptMemo[64];
 
-static int is_busy(Entry* e, DWORD now) { return now - e->winStart <= 4000 && e->winCount > 8; }
+static int is_busy(Entry* e, DWORD now)
+{
+    if (contains_ci(e->path, "difficultySelect.")) return 0;   /* a picker you scroll through quickly */
+    return now - e->winStart <= 4000 && e->winCount > 8;
+}
 
 /* focus state */
 static wchar g_focusPath[PATHMAX];
@@ -1817,6 +1821,51 @@ static int is_menu_choice(Entry* e)
     }
     return 0;
 }
+/* the number picker in the difficulty box: "CHOOSE NUMBER OF MODIFIERS" in Test Your Luck */
+static int is_count_choice(const wchar* path) { return contains_ci(path, "difficultySelect.optionBox"); }
+
+/* Test Your Luck: the slot reels before the fight. Reel 0 picks the opponent,
+   the rest the match modifiers, each marked P1, P2 or ALL for who it affects.
+   Each reel takes focus as it starts to stop (handle_focus sets g_reelDue) and
+   its name and marker arrive about half a second later; this works even when a
+   rematch lands on the same text as last time. The reels stop one after another (the last few at once), so each is read as it
+   stops: "Opponent, SCORPION", "Match modifiers, X-RAY INSTAKILL for your
+   opponent", "EXPLOSIVE KOMBAT for both". */
+static int g_you;   /* which player is you, set at the start of each fight */
+static void reel_path(char* path, int r, const char* tail)
+{
+    int n = 0; const char* a = "_root.screenVis.reels.reel"; while (*a) path[n++] = *a++;
+    path[n++] = (char)('0' + r);
+    while (*tail) path[n++] = *tail++;
+    path[n] = 0;
+}
+static DWORD g_reelDue[10];
+static void tyl_tick(DWORD now)
+{
+    static int headerSaid;
+    static wchar out[1024]; out[0] = 0; int count = 0;
+    char path[96];
+    for (int r = 0; r < 10; r++) {
+        if (!g_reelDue[r] || (int)(now - g_reelDue[r]) < 0) continue;
+        g_reelDue[r] = 0;
+        reel_path(path, r, ".diamondAnim.iconDiamond.pip.text");
+        Entry* pip = entry_at(path);
+        if (!pip) continue;
+        reel_path(path, r, ".desc.text");
+        Entry* d = entry_at(path);
+        if (!d || !d->text[0]) continue;
+        if (r == 0) { headerSaid = 0; add_part(out, 1024, (const wchar*)L"Opponent", &count); add_part(out, 1024, d->text, &count); continue; }
+        if (!headerSaid) { add_part(out, 1024, (const wchar*)L"Match modifiers", &count); headerSaid = 1; }
+        static wchar part[TEXTMAX + 32];
+        wcpy(part, d->text, TEXTMAX + 32);
+        if (weq(pip->text, (const wchar*)L"ALL")) wcat(part, (const wchar*)L" for both", TEXTMAX + 32);
+        else if (weq(pip->text, (const wchar*)L"P1")) wcat(part, g_you ? (const wchar*)L" for your opponent" : (const wchar*)L" for you", TEXTMAX + 32);
+        else if (weq(pip->text, (const wchar*)L"P2")) wcat(part, g_you ? (const wchar*)L" for you" : (const wchar*)L" for your opponent", TEXTMAX + 32);
+        add_part(out, 1024, part, &count);
+    }
+    if (out[0]) say(out, 0);
+}
+
 static void auto_read(DWORD now)
 {
     if (g_focusPending) return;
@@ -1834,7 +1883,7 @@ static void auto_read(DWORD now)
         if (g_recentSpoken[s]) continue;
         Entry* e = &g_ent[g_recent[s]];
         /* a ticking clock or counter must not hold everything else back */
-        if (e->gen != g_recentGen[s] || is_busy(e, now) || (no_letters(e->text) && !is_price(e->path))) { g_recentSpoken[s] = 1; continue; }
+        if (e->gen != g_recentGen[s] || is_busy(e, now) || (no_letters(e->text) && !is_price(e->path) && !is_count_choice(e->path))) { g_recentSpoken[s] = 1; continue; }
         if (now - g_recentT[s] < 250) return;
     }
     for (int k = start; k < g_nrecent; k++) {
@@ -1842,11 +1891,12 @@ static void auto_read(DWORD now)
         if (g_recentSpoken[s]) continue;
         g_recentSpoken[s] = 1;
         Entry* e = &g_ent[g_recent[s]];
-        if (e->gen != g_recentGen[s] || is_busy(e, now) || !e->text[0] || (no_letters(e->text) && !is_price(e->path))) continue;
+        if (e->gen != g_recentGen[s] || is_busy(e, now) || !e->text[0] || (no_letters(e->text) && !is_price(e->path) && !is_count_choice(e->path))) continue;
         if (ends_with_colon(e->text)) continue;   /* a label waiting for its value, e.g. "WINS:" */
         if (choicesOnly && !is_menu_choice(e)) continue;
         if (contains_ci(e->path, "PlayerListGridSelectElement.Cell_") || contains_ci(e->path, "RoomListGridSelectElement.Cell_") ||
-            contains_ci(e->path, "PlayerSlotGridSelectElement.Cell_") || contains_ci(e->path, "radialSelect.")) continue;   /* read on focus */
+            contains_ci(e->path, "PlayerSlotGridSelectElement.Cell_") || contains_ci(e->path, "radialSelect.") ||
+            contains_ci(e->path, "screenVis.reels.") || contains_ci(e->path, "screenVis.subtitleVis.")) continue;   /* read on focus / by tyl_tick */
         if (now - g_lastTime < 3000 && wlen(e->text) >= 8 && contains_w(g_last, e->text)) continue;   /* just said it */
         int dup = 0; for (int i = 0; i < nc; i++) if (cand[i] == e) dup = 1;   /* only its latest value */
         if (!dup && nc < 64) cand[nc++] = e;
@@ -1916,6 +1966,14 @@ static void handle_focus(Event* ev)
     /* respect vote: every arrow animates when the ring opens; the choice itself
        (radialMenu.radialN) gets focus when it is really selected */
     if (contains_ci(ev->path, "radialSelect.radialBase.arrows.")) return;
+    if (contains_ci(ev->path, "screenVis.reels.")) {   /* Test Your Luck reels: read by tyl_tick once they stop */
+        for (int i = 0; ev->path[i]; i++)
+            if (starts_ci(ev->path + i, "reels.reel") && ev->path[i + 10] >= '0' && ev->path[i + 10] <= '9' && !ev->path[i + 11]) {
+                g_reelDue[ev->path[i + 10] - '0'] = GetTickCount() + 700;
+                break;
+            }
+        return;
+    }
     if (ev->type == EV_GRID) { g_gridX = ev->x; g_gridY = ev->y; }
     else g_gridX = g_gridY = -1;
     /* move list pages (BASIC, KOMBOS, SPECIAL MOVES...): the page tab and the first move on
@@ -2814,6 +2872,7 @@ static void speech_tick(DWORD now)
     frames_tick(now);
     challenge_tick(now);
     entry_tick(now);
+    tyl_tick(now);
     if (g_valEntry && now - g_valT >= 40) {
         Entry* e = (Entry*)g_valEntry; g_valEntry = 0;
         int pageLoad = (g_burstT - g_valT < 60) && g_burstN > 3;

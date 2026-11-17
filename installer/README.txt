@@ -1,4 +1,4 @@
-MKX Access 0.9.25 - screen reader support for Mortal Kombat X
+MKX Access 0.9.26 - screen reader support for Mortal Kombat X
 =============================================================
 
 MKX Access makes Mortal Kombat X (Steam, PC) speak through the NVDA
@@ -130,6 +130,15 @@ Rooms
 - If a player's ping or record updates while you're on them, the new
   value is read with its label: "ping 85 milliseconds".
 - Player options (A on a player) and the chat box (X) are read.
+
+Test Your Luck
+- The number of modifiers is read as you change it:
+  "5, CHOOSE NUMBER OF MODIFIERS", then "6", "7".
+- The slot reels before the fight are read as each one stops: first
+  your opponent, "Opponent, SCORPION", then each modifier and who it
+  affects: "Match modifiers, X-RAY INSTAKILL for your opponent",
+  "EXPLOSIVE KOMBAT for both", "THROWING DISABLED for you".
+- These are read even with auto read off.
 
 King of the Hill
 - Moving between the players in the theater reads each one:
