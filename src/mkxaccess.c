@@ -14,7 +14,7 @@
    Everything is also written to MKXAccess.log next to the game exe. */
 #include "win.h"
 
-#define VERSION L"0.9.29"
+#define VERSION L"1.0"
 #define FOCUS_DELAY 70   /* ms to wait after focus moves, for descriptions to arrive */
 #define IMAGE_BASE 0x140000000ULL
 
@@ -850,6 +850,7 @@ static wchar g_focusItem[PATHMAX];   /* parent holding the focused item's labels
 static void* g_valEntry; static int g_valGen; static DWORD g_valT;   /* value change waiting to be said */
 static DWORD g_burstT; static int g_burstN;                           /* texts set within 50 ms */
 static int is_hist_page(const wchar* path);
+static void note_long(Entry* e);
 
 static int is_child_path(const wchar* child, const wchar* parent);
 static void say(const wchar* raw, int interrupt);
@@ -1195,6 +1196,7 @@ static void handle_text(Event* ev)
     }
     logf3(again ? (const wchar*)L"TEXT-AGAIN" : tag, e->path[0] ? e->path : (const wchar*)L"?", clean);
     wcpy(e->text, clean, TEXTMAX);
+    note_long(e);
     DWORD now = ev->t;
     if (now - e->winStart > 4000) { e->winStart = now; e->winCount = 0; }
     e->winCount++;
@@ -1271,6 +1273,15 @@ static void collapse_spaced(wchar* t)
     t[o] = 0;
 }
 
+/* the labels whose text was cut at TEXTMAX (handle_text keeps the latest 8), so say()
+   only looks at these instead of every label */
+static Entry* g_longEnt[8]; static int g_longEntNext;
+static void note_long(Entry* e)
+{
+    if (wlen(e->text) < TEXTMAX - 40) return;
+    for (int i = 0; i < 8; i++) if (g_longEnt[i] == e) return;
+    g_longEnt[g_longEntNext] = e; g_longEntNext = (g_longEntNext + 1) & 7;
+}
 /* the full text of a long label whose start (cut to TEXTMAX) is "cut", or 0 */
 static const wchar* long_text(const wchar* cut)
 {
@@ -1292,9 +1303,9 @@ static void say(const wchar* raw, int interrupt)
 {
     static wchar buf[LONGMAX + 4096], whole[LONGMAX + 4096];
     /* a part that was cut at TEXTMAX: put the full text back */
-    for (int i = 0; i < NENT && raw != whole; i++) {
-        Entry* e = &g_ent[i];
-        if (!e->used || wlen(e->text) < TEXTMAX - 40) continue;
+    for (int i = 0; i < 8 && raw != whole; i++) {
+        Entry* e = g_longEnt[i];
+        if (!e || !e->used || wlen(e->text) < TEXTMAX - 40) continue;
         const wchar* at = 0;
         int n = wlen(e->text);
         for (const wchar* q = raw; *q && !at; q++) { int k = 0; while (k < n && q[k] == e->text[k]) k++; if (k == n) at = q; }

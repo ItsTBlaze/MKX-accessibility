@@ -1,11 +1,11 @@
-MKX Access 0.9.29 - screen reader support for Mortal Kombat X
-=============================================================
+MKX Access 1.0 - screen reader support for Mortal Kombat X
+==========================================================
 
 MKX Access makes Mortal Kombat X (Steam, PC) speak through the NVDA
 screen reader. It reads the game's own text as you move through menus,
 so you hear the same words a sighted player sees.
 
-This is a test version. To install it, see INSTALL.txt in this folder,
+To install it, see INSTALL.txt in this folder,
 or just run Install.
 
 
