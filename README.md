@@ -59,7 +59,7 @@ These only work while the game window is in front.
 Every sound is a `.wav` file in the `MKXAccess Sounds` folder next to the mod, and
 any of them can be replaced (any 16-bit `.wav`, mono or stereo, any sample rate).
 Install adds missing sounds but never replaces one that has been customized. The
-health, X-ray and wall hum sounds were made by ItsTBlaze; the menu sounds are made
+health, X-ray and wall hum sounds were made by TBlaze; the menu sounds are made
 by `tools/make_sounds.py`.
 
 ## Reporting problems
@@ -113,6 +113,8 @@ clang -fshort-wchar -w -O1 -o test/harness test/harness.c
 
 ## Credits
 
+- Made by TBlaze.
+- Thanks to YourSins and RattleHead for testing, feedback and suggestions.
 - [MKXHook](https://github.com/ermaccer/MKXHook) by ermaccer, whose work confirmed
   the game's addresses.
 - NVDA controller client by NV Access (LGPL 2.1), via

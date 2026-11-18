@@ -27,6 +27,9 @@ Settings and options
 Character, variation and stage select
 - The fighter under your cursor, the variation name with its
   description, and the stage name.
+- The difficulty choice after picking fighters: "MEDIUM, CHOOSE YOUR
+  DIFFICULTY", then each choice as you change it. This is read even
+  with auto read off.
 
 Pause menu and move list
 - Each move's name, its input in words, and its attack type.
@@ -131,11 +134,10 @@ Rooms
   value is read with its label: "ping 85 milliseconds".
 - Player options (A on a player) and the chat box (X) are read.
 
-Character viewer (Extras > Collection)
+Character viewer (Extras > Kollection)
 - Each character is read with their whole biography, the same text
-  the triggers scroll through on screen. Long biographies used to stop
-  partway. Move to the next character to stop it, or F5 to hear it
-  again.
+  the triggers scroll through on screen. Move to the next character
+  to stop it, or F5 to hear it again.
 - On any screen whose buttons say "SCROLL DESCRIPTION", pressing the
   left or right trigger reads the description in full. On Costume
   Select this is the character's biography, since skins have no
@@ -241,6 +243,7 @@ The Krypt
 Messages and popups
 - Pop-up questions and their choices, for example:
   "Are you sure you want to quit the game?, YES, A, NO, B".
+  These are read even with auto read off.
 - Button prompts that screens show, for example "B, back".
 - Loading and status messages such as "Updating Game Data...".
 
@@ -290,6 +293,9 @@ https://github.com/ItsTBlaze/MKX-accessibility/issues
 
 
 CREDITS
-Made by ItsTBlaze. NVDA's controller library is from NV Access,
+Made by TBlaze.
+Thanks to YourSins and RattleHead for testing, feedback and
+suggestions.
+NVDA's controller library is from NV Access,
 licensed under the LGPL 2.1 (see LICENSE-NVDA.txt).
 Project page: https://github.com/ItsTBlaze/MKX-accessibility
