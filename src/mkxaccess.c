@@ -14,7 +14,7 @@
    Everything is also written to MKXAccess.log next to the game exe. */
 #include "win.h"
 
-#define VERSION L"0.9.28"
+#define VERSION L"0.9.29"
 #define FOCUS_DELAY 70   /* ms to wait after focus moves, for descriptions to arrive */
 #define IMAGE_BASE 0x140000000ULL
 
@@ -44,7 +44,7 @@ static gotoLabel_t   o_gotoAndPlay, o_gotoAndStop;
 
 /* ------------------------------------------------------------------ */
 /* event queue: game thread -> worker thread                           */
-enum { EV_TEXT = 1, EV_HTML, EV_VTEXT, EV_VHTML, EV_FOCUS, EV_SETFOCUS, EV_GRID, EV_ANIM, EV_LABEL, EV_COMBOEND, EV_INVITE, EV_PAD, EV_LOBBYINVITE, EV_MENUPAD, EV_METERFULL, EV_FRAMES };
+enum { EV_TEXT = 1, EV_HTML, EV_VTEXT, EV_VHTML, EV_FOCUS, EV_SETFOCUS, EV_GRID, EV_ANIM, EV_LABEL, EV_COMBOEND, EV_INVITE, EV_PAD, EV_LOBBYINVITE, EV_MENUPAD, EV_METERFULL, EV_FRAMES, EV_TRIGGER };
 #define PATHMAX 320
 #define TEXTMAX 512
 typedef struct { int type; u64 id; DWORD t; int x, y; wchar path[PATHMAX]; wchar text[TEXTMAX]; } Event;
@@ -275,6 +275,7 @@ static WORD g_padPrev[4];
    gets no controller input and no key presses, so nothing moves underneath it */
 static volatile int g_menuOpen;
 static WORD g_padHide[4];   /* buttons still held from the menu: hidden until released */
+static BYTE g_trigPrev[4];  /* left/right trigger held, to see a fresh press */
 static int g_padWasMenu[4];
 static DWORD WINAPI hk_XInputGetState(DWORD idx, XState* st)
 {
@@ -296,6 +297,12 @@ static DWORD WINAPI hk_XInputGetState(DWORD idx, XState* st)
         return r;
     }
     if (g_padWasMenu[idx]) { g_padWasMenu[idx] = 0; g_padHide[idx] = b; }   /* menu just closed */
+    /* a trigger pressed: the worker reads the description if the screen offers
+       "SCROLL DESCRIPTION" (Kollection character and costume pages). The game still
+       gets the trigger, so the text scrolls on screen as usual. */
+    BYTE trig = (BYTE)((st->pad.lt > 100 ? 1 : 0) | (st->pad.rt > 100 ? 2 : 0));
+    if (trig & ~g_trigPrev[idx]) { Event* e = q_begin(); if (e) { e->type = EV_TRIGGER; q_end(); } }
+    g_trigPrev[idx] = trig;
     if (g_padHide[idx]) { g_padHide[idx] &= b; st->pad.wButtons &= (WORD)~g_padHide[idx]; b = st->pad.wButtons; }
     if (g_acceptMode && !g_padMode) {
         if (fresh & PAD_BACK) { Event* e = q_begin(); if (e) { e->type = EV_PAD; e->x = PAD_BACK; q_end(); } }
@@ -1991,6 +1998,16 @@ static void hist_progress(wchar* out, int max)
         hist_join(out, max, (const wchar*)L". ", part);
     }
 }
+/* a trigger was pressed: on a screen whose buttons say "SCROLL DESCRIPTION", read the
+   description in full (the Kollection's character biography, also shown for skins) */
+static void read_description(void)
+{
+    Entry* nav = entry_at("_root.BaseElements.Elements.navText.Buttons.ButtonText.Text");
+    if (!nav || !contains_ci(nav->text, "SCROLL DESCRIPTION")) return;
+    Entry* d = entry_at("_root.BaseElements.Elements.Collection.Bio.Text_Bio.ScrollingTextInterface.ScrollingText.Text");
+    if (!d || !d->text[0]) { say((const wchar*)L"No description", 1); return; }
+    say(d->text, 1);   /* say() puts back the part a long text loses in the queue */
+}
 static void label_event(Event* ev)
 {
     logf3((const wchar*)L"ANIM", ev->path[0] ? ev->path : (const wchar*)L"?", ev->text);
@@ -3117,6 +3134,7 @@ static DWORD WINAPI worker(void* arg)
             else if (ev.type == EV_MENUPAD) menu_pad(ev.x);
             else if (ev.type == EV_METERFULL) meter_full(ev.id);
             else if (ev.type == EV_FRAMES) frames_result(ev.x, ev.y, (int)ev.id);
+            else if (ev.type == EV_TRIGGER) read_description();
             else if (ev.type == EV_PAD && (ev.x & PAD_BACK)) steam_accept_invite();
             else if (ev.type == EV_PAD) {
                 if (ev.x & PAD_DOWN) steam_invite_key(0, 0);

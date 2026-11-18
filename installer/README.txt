@@ -1,4 +1,4 @@
-MKX Access 0.9.28 - screen reader support for Mortal Kombat X
+MKX Access 0.9.29 - screen reader support for Mortal Kombat X
 =============================================================
 
 MKX Access makes Mortal Kombat X (Steam, PC) speak through the NVDA
@@ -136,6 +136,10 @@ Character viewer (Extras > Collection)
   the triggers scroll through on screen. Long biographies used to stop
   partway. Move to the next character to stop it, or F5 to hear it
   again.
+- On any screen whose buttons say "SCROLL DESCRIPTION", pressing the
+  left or right trigger reads the description in full. On Costume
+  Select this is the character's biography, since skins have no
+  description of their own.
 
 Kombat History (Extras > Offline Kombat History, and the online one)
 - Each tab's stats are read when you move to the tab, after its name:
