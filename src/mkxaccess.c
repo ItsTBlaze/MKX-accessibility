@@ -14,7 +14,7 @@
    Everything is also written to MKXAccess.log next to the game exe. */
 #include "win.h"
 
-#define VERSION L"0.9.27"
+#define VERSION L"0.9.28"
 #define FOCUS_DELAY 70   /* ms to wait after focus moves, for descriptions to arrive */
 #define IMAGE_BASE 0x140000000ULL
 
@@ -139,12 +139,23 @@ static int hot_ignored(const wchar* p)
             p[6] == 'L' && p[7] == 'o' && p[8] == 'g' && p[9] == 's') return 1;
     return 0;
 }
+/* Texts longer than TEXTMAX (character bios run past 1,000 letters) are cut short in
+   the queue. The hooks keep the latest few in full here, under the queue lock, and
+   say() puts the full text back in place of the cut one. */
+#define LONGMAX 8192
+static wchar g_long[4][LONGMAX]; static int g_longNext;
+static void keep_long(const wchar* s)   /* call between q_begin and q_end */
+{
+    if (!s || wlen(s) < TEXTMAX - 1) return;
+    wcpy(g_long[g_longNext], s, LONGMAX);
+    g_longNext = (g_longNext + 1) & 3;
+}
 static void hk_setText(void* self, const wchar* s)
 {
     wchar path[PATHMAX];
     if (same_as_last(self, s, 1, path) || hot_ignored(path)) { o_setText(self, s); return; }
     Event* e = q_begin();
-    if (e) { e->type = EV_TEXT; e->id = (u64)self; wcpy(e->path, path, PATHMAX); if (s) wcpy(e->text, s, TEXTMAX); q_end(); }
+    if (e) { e->type = EV_TEXT; e->id = (u64)self; wcpy(e->path, path, PATHMAX); if (s) wcpy(e->text, s, TEXTMAX); keep_long(s); q_end(); }
     o_setText(self, s);
 }
 static DWORD hk_setTextHTML(void* self, const wchar* s)
@@ -152,7 +163,7 @@ static DWORD hk_setTextHTML(void* self, const wchar* s)
     wchar path[PATHMAX];
     if (same_as_last(self, s, 2, path) || hot_ignored(path)) return o_setTextHTML(self, s);
     Event* e = q_begin();
-    if (e) { e->type = EV_HTML; e->id = (u64)self; wcpy(e->path, path, PATHMAX); if (s) wcpy(e->text, s, TEXTMAX); q_end(); }
+    if (e) { e->type = EV_HTML; e->id = (u64)self; wcpy(e->path, path, PATHMAX); if (s) wcpy(e->text, s, TEXTMAX); keep_long(s); q_end(); }
     return o_setTextHTML(self, s);
 }
 static BYTE hk_valSetText(void* v, const wchar* s)
@@ -529,14 +540,14 @@ typedef DWORD (WINAPI *nvSpeak_t)(const wchar*);
 typedef DWORD (WINAPI *nvVoid_t)(void);
 static nvSpeak_t nv_speak; static nvVoid_t nv_cancel, nv_test;
 static int g_muted, g_autoRead = 1;   /* 0 off, 1 everywhere, 2 everywhere except during fights */
-static wchar g_last[2048];
+static wchar g_last[8192 + 4096];   /* the last thing spoken, for F5 (long bios included) */
 static DWORD g_lastTime;
 
 static void speak(const wchar* s, int interrupt)
 {
     if (!s || !s[0]) return;
     logf3((const wchar*)L"SPEAK", 0, s);
-    wcpy(g_last, s, 2048); g_lastTime = GetTickCount();
+    wcpy(g_last, s, 8192 + 4096); g_lastTime = GetTickCount();
     if (g_muted || !nv_speak) return;
     if (interrupt && nv_cancel) nv_cancel();
     nv_speak(s);
@@ -580,8 +591,8 @@ static void fix_packed_ansi(const wchar* in, wchar* out, int max)
 
 static void clean_text(const wchar* in0, wchar* out, int max)
 {
-    static wchar fixed[TEXTMAX];
-    fix_packed_ansi(in0, fixed, TEXTMAX);
+    static wchar fixed[LONGMAX];
+    fix_packed_ansi(in0, fixed, LONGMAX);
     const wchar* in = fixed;
     int o = 0, space = 1;
     for (int i = 0; in[i] && o < max - 1; i++) {
@@ -1253,10 +1264,44 @@ static void collapse_spaced(wchar* t)
     t[o] = 0;
 }
 
+/* the full text of a long label whose start (cut to TEXTMAX) is "cut", or 0 */
+static const wchar* long_text(const wchar* cut)
+{
+    static wchar full[LONGMAX], prefix[TEXTMAX];
+    int found = 0;
+    EnterCriticalSection(&g_qlock);
+    for (int k = 0; k < 4 && !found; k++) {
+        if (!g_long[k][0]) continue;
+        wcpy(prefix, g_long[k], TEXTMAX);           /* the part that went through the queue */
+        static wchar cp[TEXTMAX]; clean_text(prefix, cp, TEXTMAX);
+        if (weq(cp, cut)) { wcpy(full, g_long[k], LONGMAX); found = 1; }
+    }
+    LeaveCriticalSection(&g_qlock);
+    if (!found) return 0;
+    static wchar cl[LONGMAX]; clean_text(full, cl, LONGMAX);
+    return cl;
+}
 static void say(const wchar* raw, int interrupt)
 {
-    static wchar buf[4096];
-    speakify(raw, buf, 4096);
+    static wchar buf[LONGMAX + 4096], whole[LONGMAX + 4096];
+    /* a part that was cut at TEXTMAX: put the full text back */
+    for (int i = 0; i < NENT && raw != whole; i++) {
+        Entry* e = &g_ent[i];
+        if (!e->used || wlen(e->text) < TEXTMAX - 40) continue;
+        const wchar* at = 0;
+        int n = wlen(e->text);
+        for (const wchar* q = raw; *q && !at; q++) { int k = 0; while (k < n && q[k] == e->text[k]) k++; if (k == n) at = q; }
+        if (!at) continue;
+        const wchar* full = long_text(e->text);
+        if (!full) continue;
+        int o = 0;
+        for (const wchar* q = raw; q < at && o < LONGMAX + 4000; q++) whole[o++] = *q;
+        for (const wchar* q = full; *q && o < LONGMAX + 4000; q++) whole[o++] = *q;
+        for (const wchar* q = at + n; *q && o < LONGMAX + 4090; q++) whole[o++] = *q;
+        whole[o] = 0;
+        raw = whole;
+    }
+    speakify(raw, buf, LONGMAX + 4096);
     collapse_spaced(buf);
     speak(buf, interrupt);
 }
@@ -2395,7 +2440,7 @@ static void steam_invite_tick(DWORD now)
 static void speak_force_q(const wchar* s, int interrupt)
 {
     logf3((const wchar*)L"SPEAK", 0, s);
-    wcpy(g_last, s, 2048); g_lastTime = GetTickCount();
+    wcpy(g_last, s, 8192 + 4096); g_lastTime = GetTickCount();
     if (!nv_speak) return;
     if (interrupt && nv_cancel) nv_cancel();
     nv_speak(s);
@@ -2976,7 +3021,7 @@ static void poll_keys(void)
         if (lf) menu_change(-1, 0);
         if (rt) menu_change(1, 0);
         if (ent || sp) menu_change(1, 1);
-        if (f5) { static wchar again[2048]; wcpy(again, g_last, 2048); speak_force_q(again, 1); }
+        if (f5) { static wchar again[8192 + 4096]; wcpy(again, g_last, 8192 + 4096); speak_force_q(again, 1); }
         return;
     }
     if (f3) { g_menuOpen = 1; menu_show(); return; }
@@ -2992,7 +3037,7 @@ static void poll_keys(void)
     }
     else if (f10) { g_damageNumbers = !g_damageNumbers; settings_save(); speak_force(g_damageNumbers ? (const wchar*)L"Damage numbers on" : (const wchar*)L"Damage numbers off"); }
     if (f9) speak_force((const wchar*)(L"MKX Access version " VERSION));
-    if (f5) { static wchar again[2048]; wcpy(again, g_last[0] ? g_last : (const wchar*)L"Nothing yet", 2048); speak(again, 1); }
+    if (f5) { static wchar again[8192 + 4096]; wcpy(again, g_last[0] ? g_last : (const wchar*)L"Nothing yet", 8192 + 4096); speak(again, 1); }
     if (f6 && !entry_read()) read_screen();
     if (f7) {   /* off -> everywhere -> everywhere except during fights -> off */
         g_autoRead = (g_autoRead + 1) % 3; settings_save();
