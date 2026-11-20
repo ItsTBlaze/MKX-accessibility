@@ -231,7 +231,9 @@ Accepting invites
 - While an invite is waiting, the Back button only accepts it. An
   invite you don't answer is dropped after 2 minutes.
 
-The Krypt
+The Krypt (only partly accessible so far)
+- The Krypt can't be fully played with the mod yet: you hear the
+  text below, but not enough to find your way around on your own.
 - Tips and messages, such as "Welcome to The Krypt!".
 - Button prompts as they appear: "A, Open Tomb", and prices:
   "1,280, A, Purchase".
@@ -275,6 +277,7 @@ HOTKEYS (only while the game window is in front)
 
 
 KNOWN LIMITS
+- The Krypt is only partly accessible so far (see The Krypt above).
 - Only online friends are listed, since offline friends can't join.
 - Fights are not narrated beyond damage, combos and the fight sounds.
   The game's own sounds still tell you most of what is happening.
